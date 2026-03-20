@@ -1,13 +1,9 @@
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <cmath>
-#include <vector>
-
-#include "ggml.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
 #include "gguf_loader.h"
+
+#include <cstdio>
+#include <vector>
+#include <ggml.h>
+#include <ggml-backend.h>
 
 int main() {
     // Load model

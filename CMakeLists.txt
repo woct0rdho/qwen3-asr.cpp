@@ -1,9 +1,21 @@
 cmake_minimum_required(VERSION 3.14)
-project(qwen3-asr-ggml VERSION 0.1.0 LANGUAGES CXX)
+project(qwen3-asr.cpp VERSION 0.1.1 LANGUAGES CXX)
 
 # C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(BUILD_SHARED_LIBS ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+option(QWEN3_ASR_TEST "Enable test mode" ON)
+option(GGML_AVX "ggml: enable AVX" ON)
+option(GGML_AVX2 "ggml: enable AVX2" ON)
+option(GGML_FMA "ggml: enable FMA" ON)
+option(GGML_F16C "ggml: enable F16c" ON)
+option(GGML_VULKAN "ggml: enable Vulkan backend" OFF)
+option(GGML_METAL "ggml: enable Metal backend" OFF)
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -13,303 +25,141 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Timing instrumentation option
-option(QWEN3_ASR_TIMING "Enable detailed timing instrumentation" OFF)
+option(QWEN3_ASR_TIMING "Enable detailed timing instrumentation" ON)
 if(QWEN3_ASR_TIMING)
     add_compile_definitions(QWEN3_ASR_TIMING)
 endif()
 
-# Find threads
+add_subdirectory(ggml)
+file(GLOB SOURCES "src/*.*")
+
 find_package(Threads REQUIRED)
 
-# GGML library paths
-set(GGML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ggml")
-set(GGML_BUILD_DIR "${GGML_DIR}/build")
+if (GGML_VULKAN)
+    find_package(Vulkan REQUIRED)
+endif ()
 
-# Mel spectrogram library
-add_library(mel_spectrogram STATIC
-    src/mel_spectrogram.cpp
+# ==================================== Library ====================================
+add_library(qwen3-asr SHARED
+        ${SOURCES}
 )
-target_include_directories(mel_spectrogram PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-if(APPLE)
-    target_link_libraries(mel_spectrogram PRIVATE
-        Threads::Threads
-        "-framework Accelerate"
+
+if(WIN32)
+    target_compile_definitions(ggml-base PRIVATE _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+    target_compile_definitions(qwen3-asr PRIVATE QWEN3ASR_EXPORTS)
+    set_target_properties(qwen3-asr PROPERTIES
+            WINDOWS_EXPORT_ALL_SYMBOLS ON
+            IMPORT_PREFIX ""
+            IMPORT_SUFFIX ".lib"
     )
-else()
-    target_link_libraries(mel_spectrogram PRIVATE
-        Threads::Threads
-    )
+
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+    set(CMAKE_INSTALL_RPATH "${CMAKE_BINARY_DIR}")
+
 endif()
 
-# Audio encoder library (GGML-based)
-add_library(audio_encoder STATIC
-    src/gguf_loader.cpp
-    src/audio_encoder.cpp
-)
-target_include_directories(audio_encoder PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${GGML_DIR}/include
-)
-target_link_directories(audio_encoder PUBLIC
-    ${GGML_BUILD_DIR}/src
-)
-target_link_libraries(audio_encoder PUBLIC
-    ggml
-    ggml-base
-    ggml-cpu
-    Threads::Threads
+if (APPLE)
+    target_link_libraries(qwen3asr PRIVATE "-framework Accelerate")
+endif ()
+
+target_include_directories(qwen3-asr PRIVATE
+        ggml/include
+        ggml/src
+        include
+        src
 )
 
-# Text decoder library (GGML-based)
-add_library(text_decoder STATIC
-    src/text_decoder.cpp
-)
-target_include_directories(text_decoder PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${GGML_DIR}/include
-)
-target_link_directories(text_decoder PUBLIC
-    ${GGML_BUILD_DIR}/src
-)
-target_link_libraries(text_decoder PUBLIC
-    ggml
-    ggml-base
-    ggml-cpu
-    Threads::Threads
-)
+target_link_libraries(qwen3-asr PRIVATE ggml Threads::Threads)
 
-# Audio injection library (pure C++, no GGML dependency)
-add_library(audio_injection STATIC
-    src/audio_injection.cpp
-)
-target_include_directories(audio_injection PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-# Qwen3 ASR library (full pipeline)
-add_library(qwen3_asr STATIC
-    src/qwen3_asr.cpp
-)
-target_include_directories(qwen3_asr PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${GGML_DIR}/include
-)
-target_link_libraries(qwen3_asr PUBLIC
-    mel_spectrogram
-    audio_encoder
-    text_decoder
-    audio_injection
-    Threads::Threads
-)
-
-# ForcedAligner library
-add_library(forced_aligner STATIC
-    src/forced_aligner.cpp
-)
-target_include_directories(forced_aligner PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${GGML_DIR}/include
-)
-target_link_directories(forced_aligner PUBLIC
-    ${GGML_BUILD_DIR}/src
-)
-target_link_libraries(forced_aligner PUBLIC
-    mel_spectrogram
-    ggml
-    ggml-base
-    ggml-cpu
-    Threads::Threads
-)
-
-# CLI executable
+# ==================================== CLI ====================================
 add_executable(qwen3-asr-cli
-    src/main.cpp
-)
-target_link_libraries(qwen3-asr-cli PRIVATE
-    qwen3_asr
-    forced_aligner
+        cli/main.cpp
 )
 
-# Test executable for mel spectrogram
-add_executable(test_mel
-    tests/test_mel.cpp
-)
-target_link_libraries(test_mel PRIVATE
-    mel_spectrogram
-    Threads::Threads
+target_include_directories(qwen3-asr-cli PRIVATE
+        ggml/include
+        ggml/src
+        include
+        src
 )
 
-# Test executable for audio encoder
-add_executable(test_encoder
-    tests/test_encoder.cpp
-)
-target_link_libraries(test_encoder PRIVATE
-    audio_encoder
-    Threads::Threads
-)
+target_link_libraries(qwen3-asr-cli PRIVATE qwen3-asr ggml Threads::Threads)
 
-# Test executable for text decoder
-add_executable(test_decoder
-    tests/test_decoder.cpp
-)
-target_link_libraries(test_decoder PRIVATE
-    text_decoder
-    Threads::Threads
-)
 
-# Test executable for audio injection
-add_executable(test_injection
-    tests/test_injection.cpp
-)
-target_link_libraries(test_injection PRIVATE
-    audio_injection
-)
+# ==================================== Test  ====================================
+if (QWEN3_ASR_TEST)
+    # general test
+    add_executable(qwen3asr-test tests/qwen3asr_test.cpp)
+    target_include_directories(qwen3asr-test PRIVATE ggml/include include src)
+    target_link_libraries(qwen3asr-test PRIVATE qwen3-asr ggml Threads::Threads)
 
-# Simple decoder test
-add_executable(test_decoder_simple
-    tests/test_decoder_simple.cpp
-)
-target_link_libraries(test_decoder_simple PRIVATE
-    text_decoder
-    Threads::Threads
-)
+    # unit test
+    add_executable(test_attention_compare tests/test_attention_compare.cpp)
+    add_executable(test_conv1 tests/test_conv1.cpp)
+    add_executable(test_conv2d tests/test_conv2d.cpp)
+    add_executable(test_conv_no_chunk tests/test_conv_no_chunk.cpp)
+    add_executable(test_conv_only tests/test_conv_only.cpp)
+    add_executable(test_decoder tests/test_decoder.cpp)
+    add_executable(test_decoder_50 tests/test_decoder_50.cpp)
+    add_executable(test_decoder_debug tests/test_decoder_debug.cpp)
+    add_executable(test_decoder_last_pos tests/test_decoder_last_pos.cpp)
+    add_executable(test_decoder_lengths tests/test_decoder_lengths.cpp)
+    add_executable(test_decoder_no_audio tests/test_decoder_no_audio.cpp)
+    add_executable(test_decoder_simple tests/test_decoder_simple.cpp)
+    add_executable(test_decoder_trace tests/test_decoder_trace.cpp)
+    add_executable(test_decoder_with_audio tests/test_decoder_with_audio.cpp)
+    add_executable(test_embedding tests/test_embedding.cpp)
+    add_executable(test_encoder tests/test_encoder.cpp)
+    add_executable(test_encoder_no_chunk tests/test_encoder_no_chunk.cpp)
+    add_executable(test_injection tests/test_injection.cpp)
+    add_executable(test_kernel_load tests/test_kernel_load.cpp)
+    add_executable(test_mel tests/test_mel.cpp)
+    add_executable(test_mel_load tests/test_mel_load.cpp)
+    add_executable(test_qk_compare tests/test_qk_compare.cpp)
 
-# Embedding test
-add_executable(test_embedding
-    tests/test_embedding.cpp
-)
-target_include_directories(test_embedding PRIVATE
-    ${GGML_DIR}/include
-)
-target_link_directories(test_embedding PRIVATE
-    ${GGML_BUILD_DIR}/src
-)
-target_link_libraries(test_embedding PRIVATE
-    ggml
-    ggml-base
-    ggml-cpu
-    Threads::Threads
-)
+    target_include_directories(test_attention_compare PRIVATE ggml/include include src)
+    target_include_directories(test_conv1 PRIVATE ggml/include include src)
+    target_include_directories(test_conv2d PRIVATE ggml/include include src)
+    target_include_directories(test_conv_no_chunk PRIVATE ggml/include include src)
+    target_include_directories(test_conv_only PRIVATE ggml/include include src)
+    target_include_directories(test_decoder PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_50 PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_debug PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_last_pos PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_lengths PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_no_audio PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_simple PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_trace PRIVATE ggml/include include src)
+    target_include_directories(test_decoder_with_audio PRIVATE ggml/include include src)
+    target_include_directories(test_embedding PRIVATE ggml/include include src)
+    target_include_directories(test_encoder PRIVATE ggml/include include src)
+    target_include_directories(test_encoder_no_chunk PRIVATE ggml/include include src)
+    target_include_directories(test_injection PRIVATE ggml/include include src)
+    target_include_directories(test_kernel_load PRIVATE ggml/include include src)
+    target_include_directories(test_mel PRIVATE ggml/include include src)
+    target_include_directories(test_mel_load PRIVATE ggml/include include src)
+    target_include_directories(test_qk_compare PRIVATE ggml/include include src)
 
-# Debug decoder test
-add_executable(test_decoder_debug
-    tests/test_decoder_debug.cpp
-)
-target_link_libraries(test_decoder_debug PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test decoder with reference audio
-add_executable(test_decoder_with_audio
-    tests/test_decoder_with_audio.cpp
-)
-target_link_libraries(test_decoder_with_audio PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test decoder without audio (long sequence)
-add_executable(test_decoder_no_audio
-    tests/test_decoder_no_audio.cpp
-)
-target_link_libraries(test_decoder_no_audio PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test decoder last position
-add_executable(test_decoder_last_pos
-    tests/test_decoder_last_pos.cpp
-)
-target_link_libraries(test_decoder_last_pos PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test decoder lengths
-add_executable(test_decoder_lengths
-    tests/test_decoder_lengths.cpp
-)
-target_link_libraries(test_decoder_lengths PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test attention comparison
-add_executable(test_attention_compare
-    tests/test_attention_compare.cpp
-)
-target_link_libraries(test_attention_compare PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test Q/K comparison
-add_executable(test_qk_compare
-    tests/test_qk_compare.cpp
-)
-target_link_libraries(test_qk_compare PRIVATE
-    text_decoder
-    Threads::Threads
-)
-
-# Test conv only (no chunking)
-add_executable(test_conv_only
-    tests/test_conv_only.cpp
-)
-target_link_libraries(test_conv_only PRIVATE
-    audio_encoder
-    Threads::Threads
-)
-
-# Test encoder without chunking
-add_executable(test_encoder_no_chunk
-    tests/test_encoder_no_chunk.cpp
-)
-target_link_libraries(test_encoder_no_chunk PRIVATE
-    audio_encoder
-    Threads::Threads
-)
-
-# Install targets
-install(TARGETS mel_spectrogram audio_encoder text_decoder audio_injection qwen3_asr forced_aligner qwen3-asr-cli
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-)
-install(FILES src/mel_spectrogram.h src/audio_encoder.h src/gguf_loader.h src/text_decoder.h src/audio_injection.h src/qwen3_asr.h src/forced_aligner.h
-    DESTINATION include
-)
-
-# CTest support
-enable_testing()
-add_test(NAME mel_spectrogram_test
-    COMMAND test_mel
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME audio_encoder_test
-    COMMAND test_encoder
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME text_decoder_test
-    COMMAND test_decoder
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-add_test(NAME audio_injection_test
-    COMMAND test_injection
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-# Test conv1 output
-add_executable(test_conv1
-    tests/test_conv1.cpp
-)
-target_include_directories(test_conv1 PRIVATE
-    ${GGML_DIR}/include
-)
-target_link_libraries(test_conv1 PRIVATE
-    audio_encoder
-    Threads::Threads
-)
+    target_link_libraries(test_attention_compare PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_conv1 PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_conv2d PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_conv_no_chunk PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_conv_only PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_50 PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_debug PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_last_pos PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_lengths PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_no_audio PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_simple PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_trace PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_decoder_with_audio PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_embedding PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_encoder PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_encoder_no_chunk PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_injection PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_kernel_load PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_mel PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_mel_load PRIVATE qwen3-asr ggml Threads::Threads)
+    target_link_libraries(test_qk_compare PRIVATE qwen3-asr ggml Threads::Threads)
+endif ()

@@ -1,4 +1,4 @@
-#include "../src/text_decoder.h"
+#include "text_decoder.h"
 #include <cstdio>
 #include <vector>
 #include <cmath>
@@ -82,7 +82,7 @@ int main() {
         return 1;
     }
     
-    std::vector<int32_t> tokens = {151669, 151676, 151676, 151676, 151676, 
+    std::vector tokens = {151669, 151676, 151676, 151676, 151676,
                                     151676, 151676, 151676, 151676, 151670};
     
     printf("Running C++ decoder with %zu tokens...\n", tokens.size());

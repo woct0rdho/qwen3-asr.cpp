@@ -2,10 +2,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <cmath>
-#include <vector>
-#include <string>
 
 static bool load_npy_f32(const std::string & path, std::vector<float> & data, 
                          std::vector<int64_t> & shape) {

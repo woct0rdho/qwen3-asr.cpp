@@ -1,12 +1,11 @@
 #include "gguf_loader.h"
+#include "mman_multiplatform.h"
+#include "stat_multiplatform.h"
 
 #include <cstdio>
-#include <cstring>
 #include <fstream>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <ggml-impl.h>
 
 namespace qwen3_asr {
 
@@ -15,83 +14,74 @@ GGUFLoader::GGUFLoader() = default;
 GGUFLoader::~GGUFLoader() = default;
 
 bool GGUFLoader::load(const std::string & path, audio_encoder_model & model) {
-    struct ggml_context * meta_ctx = nullptr;
-    struct gguf_init_params params = {
+    ggml_context * meta_ctx = nullptr;
+    gguf_init_params params = {
         /*.no_alloc =*/ true,
         /*.ctx      =*/ &meta_ctx,
     };
     
-    struct gguf_context * ctx = gguf_init_from_file(path.c_str(), params);
+    gguf_context * ctx = gguf_init_from_file(path.c_str(), params);
     if (!ctx) {
         error_msg_ = "Failed to open GGUF file: " + path;
         return false;
     }
-    
-    if (!parse_hparams(ctx, model)) {
-        gguf_free(ctx);
-        if (meta_ctx) ggml_free(meta_ctx);
-        return false;
-    }
-    
-    if (!create_tensors(ctx, model)) {
-        gguf_free(ctx);
-        if (meta_ctx) ggml_free(meta_ctx);
-        return false;
-    }
-    
-    if (!load_tensor_data(path, ctx, model)) {
+    if (!parse_hparams(ctx, model) || !create_tensors(ctx, model) || !load_tensor_data(path, ctx, model)) {
         free_model(model);
         gguf_free(ctx);
         if (meta_ctx) ggml_free(meta_ctx);
         return false;
     }
-    
     gguf_free(ctx);
     if (meta_ctx) ggml_free(meta_ctx);
-    
     return true;
 }
 
-bool GGUFLoader::parse_hparams(struct gguf_context * ctx, audio_encoder_model & model) {
+bool GGUFLoader::parse_hparams(gguf_context * ctx, audio_encoder_model & model) {
     auto get_u32 = [&](const char * key, int32_t default_val) -> int32_t {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("GGUFLoader::parse_hparams(): Failed to find key '%s', using default value %d\n", key, default_val);
+            return default_val;
+        }
         return (int32_t)gguf_get_val_u32(ctx, idx);
     };
     
     auto get_f32 = [&](const char * key, float default_val) -> float {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("GGUFLoader::parse_hparams(): Failed to find key '%s', using default value %f\n", key, default_val);
+            return default_val;
+        }
         return gguf_get_val_f32(ctx, idx);
     };
     
     auto & hp = model.hparams;
-    hp.n_encoder_layers = get_u32("audio.encoder_layers", 18);
-    hp.d_model = get_u32("audio.d_model", 896);
-    hp.n_attention_heads = get_u32("audio.attention_heads", 14);
-    hp.ffn_dim = get_u32("audio.ffn_dim", 3584);
-    hp.conv_channels = get_u32("audio.conv_channels", 480);
-    hp.conv_out_dim = get_u32("audio.conv_out_dim", 896);
-    hp.n_mel_bins = get_u32("audio.num_mel_bins", 128);
-    hp.n_window_infer = get_u32("audio.n_window_infer", 800);
-    hp.layer_norm_eps = get_f32("audio.layer_norm_eps", 1e-5f);
+    hp.n_encoder_layers     = get_u32("qwen3-asr.audio.encoder.layer_count", 18);
+    hp.d_model              = get_u32("qwen3-asr.audio.encoder.embedding_length", 896);
+    hp.n_attention_heads    = get_u32("qwen3-asr.audio.encoder.attention.head_count", 14);
+    hp.ffn_dim              = get_u32("qwen3-asr.audio.encoder.feed_forward_length", 3584);
+    hp.conv_channels        = get_u32("qwen3-asr.audio.conv_channels", 480);
+    hp.conv_out_dim         = get_u32("qwen3-asr.audio.encoder.embedding_length", 896);
+    hp.n_mel_bins           = get_u32("qwen3-asr.audio.num_mel_bins", 128);
+    hp.n_window_infer       = 800;      // Default value from Qwen3-ASR, hardcoded directly
+    hp.layer_norm_eps       = get_f32("qwen3-asr.attention.layer_norm_rms_epsilon", 1e-5f);
     
     auto & thp = model.text_hparams;
-    thp.hidden_size = get_u32("text.hidden_size", 1024);
-    thp.n_decoder_layers = get_u32("text.decoder_layers", 28);
-    thp.n_attention_heads = get_u32("text.attention_heads", 16);
-    thp.n_key_value_heads = get_u32("text.num_key_value_heads", 8);
-    thp.intermediate_size = get_u32("text.intermediate_size", 3072);
-    thp.rms_norm_eps = get_f32("text.rms_norm_eps", 1e-6f);
+    thp.hidden_size         = get_u32("qwen3-asr.embedding_length", 1024);
+    thp.n_decoder_layers    = get_u32("qwen3-asr.block_count", 28);
+    thp.n_attention_heads   = get_u32("qwen3-asr.attention.head_count", 16);
+    thp.n_key_value_heads   = get_u32("qwen3-asr.attention.head_count_kv", 8);
+    thp.intermediate_size   = get_u32("qwen3-asr.feed_forward_length", 6144);
+    thp.rms_norm_eps        = get_f32("qwen3-asr.attention.layer_norm_rms_epsilon", 1e-6f);
     
     return true;
 }
 
-bool GGUFLoader::create_tensors(struct gguf_context * ctx, audio_encoder_model & model) {
+bool GGUFLoader::create_tensors(gguf_context * ctx, audio_encoder_model & model) {
     const int64_t n_tensors = gguf_get_n_tensors(ctx);
     
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
@@ -107,7 +97,7 @@ bool GGUFLoader::create_tensors(struct gguf_context * ctx, audio_encoder_model &
     
     for (int64_t i = 0; i < n_tensors; ++i) {
         const char * name = gguf_get_tensor_name(ctx, i);
-        enum ggml_type type = gguf_get_tensor_type(ctx, i);
+        ggml_type type = gguf_get_tensor_type(ctx, i);
         
         int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
         int n_dims = 0;
@@ -121,7 +111,6 @@ bool GGUFLoader::create_tensors(struct gguf_context * ctx, audio_encoder_model &
         size_t blck_size = ggml_blck_size(type);
         
         int64_t total_elements = 1;
-        size_t row_size = size;
         
         if (type_size > 0 && blck_size > 0) {
             total_elements = (size * blck_size) / type_size;
@@ -189,7 +178,7 @@ bool GGUFLoader::create_tensors(struct gguf_context * ctx, audio_encoder_model &
             n_dims = 1;
         }
         
-        struct ggml_tensor * tensor = ggml_new_tensor(model.ctx, type, n_dims, ne);
+        ggml_tensor * tensor = ggml_new_tensor(model.ctx, type, n_dims, ne);
         if (!tensor) {
             error_msg_ = "Failed to create tensor: " + std::string(name);
             return false;
@@ -252,16 +241,16 @@ bool GGUFLoader::create_tensors(struct gguf_context * ctx, audio_encoder_model &
     return true;
 }
 
-bool GGUFLoader::load_tensor_data(const std::string & path, struct gguf_context * ctx, 
+bool GGUFLoader::load_tensor_data(const std::string & path, gguf_context * ctx,
                                    audio_encoder_model & model) {
-    int fd = open(path.c_str(), O_RDONLY);
+    int fd = open(path.c_str(), O_BINARY);
     if (fd < 0) {
         error_msg_ = "Failed to open file for mmap: " + path;
         return false;
     }
     
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
+    struct stat64 st {};
+    if (fstat64(fd, &st) != 0) {
         error_msg_ = "Failed to stat file: " + path;
         close(fd);
         return false;
@@ -313,7 +302,7 @@ bool GGUFLoader::load_tensor_data(const std::string & path, struct gguf_context 
         auto it = model.tensors.find(name);
         if (it == model.tensors.end()) continue;
         
-        struct ggml_tensor * tensor = it->second;
+        ggml_tensor * tensor = it->second;
         tensor->buffer = model.buffer;
         tensor->data = data_base + offset;
     }

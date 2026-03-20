@@ -1,4 +1,4 @@
-#include "../src/audio_injection.h"
+#include "audio_injection.h"
 
 #include <cstdio>
 #include <cmath>
@@ -42,7 +42,7 @@ static void test_embed_tokens() {
     }
     
     int32_t input_ids[] = {0, 5, 3};
-    int32_t n_tokens = 3;
+    const int32_t n_tokens = 3;
     
     float output[n_tokens * hidden_size];
     embed_tokens(input_ids, n_tokens, token_embd, vocab_size, hidden_size, output);

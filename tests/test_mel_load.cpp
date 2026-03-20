@@ -1,13 +1,10 @@
+#include <ggml.h>
+#include <ggml-backend.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
 #include <vector>
 #include <fstream>
-
-#include "ggml.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
 
 static bool load_npy_f32(const char* path, std::vector<float>& data, int& rows, int& cols) {
     FILE* f = fopen(path, "rb");

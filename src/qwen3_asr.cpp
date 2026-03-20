@@ -1,12 +1,10 @@
 #include "qwen3_asr.h"
 #include "timing.h"
 
-#include <cstdio>
-#include <cstring>
-#include <cmath>
 #include <chrono>
 #include <algorithm>
-#include <fstream>
+
+#include <ggml-impl.h>
 
 namespace qwen3_asr {
 
@@ -25,19 +23,18 @@ bool Qwen3ASR::load_model(const std::string & model_path) {
         error_msg_ = "Failed to load audio encoder: " + encoder_.get_error();
         return false;
     }
-    
+
     if (!decoder_.load_model(model_path)) {
         error_msg_ = "Failed to load text decoder: " + decoder_.get_error();
         return false;
     }
-    
+
     generate_mel_filters(mel_filters_, QWEN_N_MELS, QWEN_N_FFT, QWEN_SAMPLE_RATE);
-    
+
     model_loaded_ = true;
-    
     int64_t t_end = get_time_ms();
-    fprintf(stderr, "Model loaded in %lld ms\n", (long long)(t_end - t_start));
-    
+
+    GGML_LOG_INFO("%s: Qwen3ASR loaded in %lld ms\n", __func__, (long long)(t_end - t_start));
     return true;
 }
 
@@ -95,7 +92,7 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     result.t_mel_ms = get_time_ms() - t_mel_start;
     
     if (params.print_progress) {
-        fprintf(stderr, "Mel spectrogram: [%d, %d]\n", mel.n_mel, mel.n_len);
+        GGML_LOG_INFO("%s: Mel spectrogram: [%d, %d]\n", __func__, mel.n_mel, mel.n_len);
     }
     
     int64_t t_encode_start = get_time_ms();
@@ -113,13 +110,13 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     int32_t n_audio_frames = audio_features.size() / text_hparams.hidden_size;
     
     if (params.print_progress) {
-        fprintf(stderr, "Audio features: [%d, %d]\n", n_audio_frames, text_hparams.hidden_size);
+        GGML_LOG_INFO("%s: Audio features: [%d, %d]\n", __func__, n_audio_frames, text_hparams.hidden_size);
     }
     
     std::vector<int32_t> input_tokens = build_input_tokens(n_audio_frames, params.language);
     
     if (params.print_progress) {
-        fprintf(stderr, "Input tokens: %zu\n", input_tokens.size());
+        GGML_LOG_INFO("%s: Input tokens: %zu\n", __func__, input_tokens.size());
     }
     
     int64_t t_decode_start = get_time_ms();
@@ -131,18 +128,20 @@ transcribe_result Qwen3ASR::transcribe_internal(const float * samples, int n_sam
     result.t_decode_ms = get_time_ms() - t_decode_start;
     
     result.tokens = output_tokens;
-    result.text = decoder_.decode_tokens(output_tokens);
+    std::vector text_tokens(output_tokens.begin() + 2, output_tokens.end());  // remove language token
+    result.text = decoder_.decode_tokens(text_tokens);
+    result.language = decoder_.decode_token(output_tokens[1]);
     result.success = true;
     
     result.t_total_ms = get_time_ms() - t_total_start;
     
     if (params.print_timing) {
-        fprintf(stderr, "\nTiming:\n");
-        fprintf(stderr, "  Mel spectrogram: %lld ms\n", (long long)result.t_mel_ms);
-        fprintf(stderr, "  Audio encoding:  %lld ms\n", (long long)result.t_encode_ms);
-        fprintf(stderr, "  Text decoding:   %lld ms\n", (long long)result.t_decode_ms);
-        fprintf(stderr, "  Total:           %lld ms\n", (long long)result.t_total_ms);
-        fprintf(stderr, "  Tokens generated: %zu\n", output_tokens.size());
+        GGML_LOG_INFO("%s: [Timing]\n", __func__);
+        GGML_LOG_INFO("    Mel spectrogram: %lld ms\n", static_cast<long long>(result.t_mel_ms));
+        GGML_LOG_INFO("    Audio encoding:  %lld ms\n", static_cast<long long>(result.t_encode_ms));
+        GGML_LOG_INFO("    Text decoding:   %lld ms\n", static_cast<long long>(result.t_decode_ms));
+        GGML_LOG_INFO("    Total:           %lld ms\n", static_cast<long long>(result.t_total_ms));
+        GGML_LOG_INFO("    Tokens generated: %zu\n", output_tokens.size());
     }
     
     return result;
@@ -251,7 +250,7 @@ bool Qwen3ASR::decode_greedy(const std::vector<int32_t> & input_tokens,
     while (next_token != cfg.eos_token_id && 
            (int32_t)output_tokens.size() < params.max_tokens) {
         
-        std::vector<int32_t> single_token = {next_token};
+        std::vector single_token = {next_token};
         
         {
             QWEN3_TIMER("decode.token");
@@ -272,7 +271,7 @@ bool Qwen3ASR::decode_greedy(const std::vector<int32_t> & input_tokens,
         }
         
         if (params.print_progress && output_tokens.size() % 10 == 0) {
-            fprintf(stderr, "Generated %zu tokens...\n", output_tokens.size());
+            GGML_LOG_INFO("Generated %zu tokens...\n", output_tokens.size());
         }
     }
     

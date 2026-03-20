@@ -1,5 +1,7 @@
 #pragma once
 
+#include "qwen3asr_win_export.h"
+
 #include <chrono>
 #include <cstdio>
 #include <map>

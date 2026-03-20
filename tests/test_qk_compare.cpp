@@ -1,7 +1,6 @@
-#include "../src/text_decoder.h"
+#include "text_decoder.h"
 #include <cstdio>
 #include <vector>
-#include <cmath>
 #include <map>
 
 int main() {

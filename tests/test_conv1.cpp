@@ -1,9 +1,6 @@
 #include "audio_encoder.h"
-#include <ggml.h>
-#include <ggml-backend.h>
 
 #include <cstdio>
-#include <cmath>
 #include <vector>
 #include <string>
 

@@ -9,14 +9,17 @@ It performs speech recognition and forced alignment with word-level timestamps.
 
 ### Core Components
 
-- `src/main.cpp` — CLI entry point, mode dispatch (transcription, alignment, combined)
-- `src/qwen3_asr.cpp/h` — High-level ASR orchestration (mel → encoder → decoder)
-- `src/forced_aligner.cpp/h` — Forced aligner (separate encoder + decoder, chunked convolution, BPE tokenizer, Korean word splitting)
-- `src/text_decoder.cpp/h` — Qwen2-based text decoder with KV cache, flash attention, RoPE
-- `src/audio_encoder.cpp/h` — Audio feature encoder with Metal GPU backend
-- `src/mel_spectrogram.cpp/h` — Mel spectrogram computation (vDSP/Accelerate optimized)
-- `src/audio_injection.cpp/h` — Audio embedding injection into token sequence
-- `src/gguf_loader.cpp/h` — GGUF model file loading with mmap
+- `cli/main.cpp` — CLI entry point, mode dispatch (transcription, alignment, combined)
+- `src/qwen3_asr.cpp` `include/qwen3_asr.h` — High-level ASR orchestration (mel → encoder → decoder)
+- `src/forced_aligner.cpp` `include/forced_aligner.h` — Forced aligner (separate encoder + decoder, chunked convolution, BPE tokenizer, Korean word splitting)
+- `src/text_decoder.cpp` `src/text_decoder.h` — Qwen2-based text decoder with KV cache, flash attention, RoPE
+- `src/audio_encoder.cpp` `src/audio_encoder.h` — Audio feature encoder with Metal GPU backend
+- `src/mel_spectrogram.cpp` `src/mel_spectrogram.h` — Mel spectrogram computation (vDSP/Accelerate optimized)
+- `src/audio_injection.cpp` `include/audio_injection.h` — Audio embedding injection into token sequence
+- `src/gguf_loader.cpp` `src/gguf_loader.h` — GGUF model file loading with mmap
+- `src/mman_multiplatform.h` — Cross-platform mmap wrapper
+- `src/stat_multiplatform.h` — Cross-platform large file support wrapper
+- `src/timing.h` — Simple timing macros
 
 ### Model Architecture
 

@@ -1,8 +1,6 @@
 #include "text_decoder.h"
 
 #include <cstdio>
-#include <cstdlib>
-#include <vector>
 #include <algorithm>
 
 int main() {

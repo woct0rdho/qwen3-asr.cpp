@@ -1,6 +1,5 @@
-#include "../src/mel_spectrogram.h"
+#include "mel_spectrogram.h"
 
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>

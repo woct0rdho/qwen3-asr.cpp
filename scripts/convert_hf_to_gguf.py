@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Convert HuggingFace Qwen3-ASR and Qwen3-ForcedAligner models to GGUF format.
+https://huggingface.co/Qwen/Qwen3-ASR-0.6B/
+https://huggingface.co/Qwen/Qwen3-ASR-1.7B/
+https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B/
 
 Usage:
     python scripts/convert_hf_to_gguf.py \
@@ -14,9 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
-import struct
 import sys
 from pathlib import Path
 from typing import Any, Iterator
@@ -41,6 +42,19 @@ logger = logging.getLogger(__name__)
 GGUF_MAGIC = 0x46554747  # "GGUF"
 GGUF_VERSION = 3
 GGUF_DEFAULT_ALIGNMENT = 32
+
+
+def get_folder_size(dir_path: Path) -> int:
+    """Get the total size of a folder in bytes."""
+    path = Path(dir_path)
+    total_size = 0
+    for file in path.rglob("*"):
+        if file.is_file():
+            try:
+                total_size += file.stat().st_size
+            except OSError:
+                pass
+    return total_size
 
 
 class Qwen3ASRConverter:
@@ -120,10 +134,10 @@ class Qwen3ASRConverter:
     ]
 
     def __init__(
-        self,
-        input_dir: Path,
-        output_path: Path,
-        output_type: str = "f16",
+            self,
+            input_dir: Path,
+            output_path: Path,
+            output_type: str = "f16",
     ):
         self.input_dir = input_dir
         self.output_path = output_path
@@ -189,10 +203,21 @@ class Qwen3ASRConverter:
             self.timestamp_token_id = None
 
         # Model name
+        model_size = get_folder_size(self.input_dir)
         if self.is_forced_aligner:
             self.model_name = "Qwen3-ForcedAligner-0.6B"
+        elif model_size > 1024 * 1024 * 1024 * 3:   # 3GB
+            self.model_name = "Qwen3-ASR-1.7B"
         else:
             self.model_name = "Qwen3-ASR-0.6B"
+
+        print({
+            "model_name": self.model_name,
+            "d_model": self.audio_d_model,
+            "encoder_attention_heads": self.audio_attention_heads,
+            "encoder_ffn_dim": self.audio_ffn_dim,
+            "encoder_layers": self.audio_encoder_layers,
+        })
 
     def _map_tensor_name(self, hf_name: str) -> str | None:
         """Map HuggingFace tensor name to GGML convention."""
@@ -230,7 +255,7 @@ class Qwen3ASRConverter:
 
     def _should_quantize(self, tensor_name: str) -> bool:
         """Determine if a tensor should be quantized (Q8_0) or kept in F16.
-        
+
         Tensors to keep in F16 for quality:
         - Embeddings (token_embd, output, pos_embd)
         - Layer norms (attn_norm, ffn_norm, output_norm, ln)
@@ -239,15 +264,15 @@ class Qwen3ASRConverter:
         # Keep embeddings in F16
         if any(x in tensor_name for x in ["token_embd", "output.weight", "pos_embd"]):
             return False
-        
+
         # Keep layer norms in F16
         if any(x in tensor_name for x in ["_norm", ".ln", "ln_post"]):
             return False
-        
+
         # Keep biases in F16 (they're usually 1D anyway, handled separately)
         if ".bias" in tensor_name:
             return False
-        
+
         # Quantize weight matrices
         return True
 
@@ -296,7 +321,7 @@ class Qwen3ASRConverter:
             if not self._should_quantize(tensor_name):
                 logger.debug(f"Keeping {tensor_name} in F16 (not quantizing)")
                 return data.astype(np.float16), gguf.GGMLQuantizationType.F16
-            
+
             # Quantize to Q8_0
             # Data must be float32 for quantization
             data = data.astype(np.float32)
@@ -305,6 +330,19 @@ class Qwen3ASRConverter:
                 return quantized, gguf.GGMLQuantizationType.Q8_0
             except Exception as e:
                 logger.warning(f"Q8_0 quantization failed for {tensor_name}: {e}, falling back to F16")
+                return data.astype(np.float16), gguf.GGMLQuantizationType.F16
+        elif self.output_type == "q4_1":
+            if not self._should_quantize(tensor_name):
+                logger.debug(f"Keeping {tensor_name} in F16 (not quantizing)")
+                return data.astype(np.float16), gguf.GGMLQuantizationType.F16
+            # Quantize to Q4_1
+            # Data must be float32 for quantization
+            data = data.astype(np.float32)
+            try:
+                quantized = gguf.quants.quantize(data, gguf.GGMLQuantizationType.Q4_1)
+                return quantized, gguf.GGMLQuantizationType.Q4_1
+            except Exception as e:
+                logger.warning(f"Q4_1 quantization failed for {tensor_name}: {e}, falling back to F16")
                 return data.astype(np.float16), gguf.GGMLQuantizationType.F16
         else:
             # Default to F16
@@ -412,14 +450,17 @@ class Qwen3ASRConverter:
         writer.add_type(gguf.GGUFType.MODEL)
 
         # File type
-        if self.output_type == "f32":
-            ftype = gguf.LlamaFileType.ALL_F32
-        elif self.output_type == "f16":
-            ftype = gguf.LlamaFileType.MOSTLY_F16
-        elif self.output_type == "q8_0":
-            ftype = gguf.LlamaFileType.MOSTLY_Q8_0
-        else:
-            ftype = gguf.LlamaFileType.MOSTLY_F16
+        match self.output_type:
+            case "f32":
+                ftype = gguf.LlamaFileType.ALL_F32
+            case "f16":
+                ftype = gguf.LlamaFileType.MOSTLY_F16
+            case "q8_0":
+                ftype = gguf.LlamaFileType.MOSTLY_Q8_0
+            case "q4_1":
+                ftype = gguf.LlamaFileType.MOSTLY_Q4_1
+            case _:
+                ftype = gguf.LlamaFileType.MOSTLY_F16
         writer.add_file_type(ftype)
 
         # Quantization version
@@ -530,7 +571,7 @@ def main():
     )
     parser.add_argument(
         "--type", "-t",
-        choices=["f16", "f32", "q8_0"],
+        choices=["f16", "f32", "q8_0", "q4_1"],
         default="f16",
         help="Output data type (default: f16). q8_0 provides ~50%% size reduction with minimal quality loss."
     )

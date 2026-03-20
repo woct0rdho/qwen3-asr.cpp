@@ -1,9 +1,8 @@
 #include "audio_encoder.h"
 #include "timing.h"
 
-#include <cmath>
-#include <cstring>
 #include <algorithm>
+#include <ggml-impl.h>
 
 #define QWEN3_ASR_MAX_NODES 4096
 
@@ -82,29 +81,29 @@ bool AudioEncoder::load_model(const std::string & model_path) {
     return true;
 }
 
-struct ggml_cgraph * AudioEncoder::build_graph_conv(int n_frames) {
+ggml_cgraph * AudioEncoder::build_graph_conv(int n_frames) {
     const auto & hp = model_.hparams;
     const int n_mel = hp.n_mel_bins;
     const int conv_ch = hp.conv_channels;
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
     
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph(ctx0);
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph(ctx0);
     
-    struct ggml_tensor * mel = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_frames, n_mel);
+    ggml_tensor * mel = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_frames, n_mel);
     ggml_set_name(mel, "mel");
     ggml_set_input(mel);
     
-    struct ggml_tensor * mel_4d = ggml_reshape_4d(ctx0, mel, n_frames, n_mel, 1, 1);
+    ggml_tensor * mel_4d = ggml_reshape_4d(ctx0, mel, n_frames, n_mel, 1, 1);
     
-    struct ggml_tensor * cur = ggml_conv_2d(ctx0, model_.conv2d1_w, mel_4d, 2, 2, 1, 1, 1, 1);
+    ggml_tensor * cur = ggml_conv_2d(ctx0, model_.conv2d1_w, mel_4d, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d1_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d1_b, 1, 1, conv_ch, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d1_b, 1, 1, conv_ch, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     ggml_set_name(cur, "after_conv1_pre_gelu");
@@ -115,14 +114,14 @@ struct ggml_cgraph * AudioEncoder::build_graph_conv(int n_frames) {
     
     cur = ggml_conv_2d(ctx0, model_.conv2d2_w, cur, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d2_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d2_b, 1, 1, conv_ch, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d2_b, 1, 1, conv_ch, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     cur = ggml_gelu(ctx0, cur);
     
     cur = ggml_conv_2d(ctx0, model_.conv2d3_w, cur, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d3_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d3_b, 1, 1, conv_ch, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d3_b, 1, 1, conv_ch, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     cur = ggml_gelu(ctx0, cur);
@@ -159,7 +158,7 @@ struct ggml_cgraph * AudioEncoder::build_graph_conv(int n_frames) {
     return gf;
 }
 
-struct ggml_cgraph * AudioEncoder::build_graph_encoder(int n_ctx) {
+ggml_cgraph * AudioEncoder::build_graph_encoder(int n_ctx) {
     const auto & hp = model_.hparams;
     const int n_state = hp.d_model;
     const int n_head = hp.n_attention_heads;
@@ -167,20 +166,20 @@ struct ggml_cgraph * AudioEncoder::build_graph_encoder(int n_ctx) {
     const int n_state_head = n_state / n_head;
     const float eps = hp.layer_norm_eps;
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
     
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_ASR_MAX_NODES, false);
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_ASR_MAX_NODES, false);
     
-    struct ggml_tensor * cur = ggml_view_tensor(ctx0, state_.embd_conv);
+    ggml_tensor * cur = ggml_view_tensor(ctx0, state_.embd_conv);
     
     const float KQscale = 1.0f / sqrtf(float(n_state_head));
     
-    struct ggml_tensor * inpL = cur;
+    ggml_tensor * inpL = cur;
     
     for (int il = 0; il < n_layer; ++il) {
         const auto & layer = model_.layers[il];
@@ -196,40 +195,40 @@ struct ggml_cgraph * AudioEncoder::build_graph_encoder(int n_ctx) {
         }
         
         {
-            struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q_w, cur);
+            ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q_w, cur);
             if (layer.attn_q_b) {
                 Qcur = ggml_add(ctx0, Qcur, layer.attn_q_b);
             }
             
-            struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k_w, cur);
+            ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k_w, cur);
             if (layer.attn_k_b) {
                 Kcur = ggml_add(ctx0, Kcur, layer.attn_k_b);
             }
             
-            struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v_w, cur);
+            ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v_w, cur);
             if (layer.attn_v_b) {
                 Vcur = ggml_add(ctx0, Vcur, layer.attn_v_b);
             }
             
-            struct ggml_tensor * Q = ggml_permute(ctx0,
+            ggml_tensor * Q = ggml_permute(ctx0,
                 ggml_reshape_3d(ctx0, Qcur, n_state_head, n_head, n_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * K = ggml_permute(ctx0,
+            ggml_tensor * K = ggml_permute(ctx0,
                 ggml_reshape_3d(ctx0, Kcur, n_state_head, n_head, n_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
+            ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
             
-            struct ggml_tensor * KQ_soft_max = ggml_soft_max_ext(ctx0, KQ, nullptr, KQscale, 0.0f);
+            ggml_tensor * KQ_soft_max = ggml_soft_max_ext(ctx0, KQ, nullptr, KQscale, 0.0f);
             
-            struct ggml_tensor * V = ggml_cont(ctx0, ggml_permute(ctx0,
+            ggml_tensor * V = ggml_cont(ctx0, ggml_permute(ctx0,
                 ggml_reshape_3d(ctx0, Vcur, n_state_head, n_head, n_ctx),
                 1, 2, 0, 3));
             
-            struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ_soft_max);
+            ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ_soft_max);
             
-            struct ggml_tensor * KQV_merged = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
+            ggml_tensor * KQV_merged = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
             
             cur = ggml_cont_2d(ctx0, KQV_merged, n_state, n_ctx);
         }
@@ -243,7 +242,7 @@ struct ggml_cgraph * AudioEncoder::build_graph_encoder(int n_ctx) {
         
         cur = ggml_add(ctx0, cur, inpL);
         
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
         
         {
             {
@@ -351,14 +350,14 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         int chunk_len = chunk_lengths[chunk_idx];
         int chunk_out_len = chunk_output_lengths[chunk_idx];
         
-        struct ggml_cgraph * gf_conv = build_graph_conv(chunk_len);
+        ggml_cgraph * gf_conv = build_graph_conv(chunk_len);
         
         if (!ggml_backend_sched_alloc_graph(state_.sched, gf_conv)) {
             error_msg_ = "Failed to allocate conv graph for chunk " + std::to_string(chunk_idx);
             return false;
         }
         
-        struct ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
+        ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
         if (!mel_tensor) {
             error_msg_ = "Failed to find mel tensor";
             ggml_backend_sched_reset(state_.sched);
@@ -380,7 +379,7 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
             return false;
         }
         
-        struct ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
+        ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
         if (!embd_conv) {
             error_msg_ = "Failed to find embd_conv tensor";
             ggml_backend_sched_reset(state_.sched);
@@ -391,7 +390,7 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         int64_t out_state = embd_conv->ne[0];
         
         if (out_ctx != chunk_out_len) {
-            fprintf(stderr, "WARNING: Expected %d output frames, got %lld\n", chunk_out_len, (long long)out_ctx);
+            GGML_LOG_WARN("%s: Expected %d output frames, got %lld", __func__, chunk_out_len, (long long)out_ctx);
         }
         
         std::vector<float> chunk_output(out_ctx * out_state);
@@ -412,14 +411,14 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
     
     state_.compute_meta.resize(ggml_tensor_overhead() * QWEN3_ASR_MAX_NODES + ggml_graph_overhead());
     
-    struct ggml_init_params enc_params = {
+    ggml_init_params enc_params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
     
-    struct ggml_context * enc_ctx = ggml_init(enc_params);
-    struct ggml_cgraph * gf_enc = ggml_new_graph_custom(enc_ctx, QWEN3_ASR_MAX_NODES, false);
+    ggml_context * enc_ctx = ggml_init(enc_params);
+    ggml_cgraph * gf_enc = ggml_new_graph_custom(enc_ctx, QWEN3_ASR_MAX_NODES, false);
     
     const auto & hp = model_.hparams;
     const int n_head = hp.n_attention_heads;
@@ -428,11 +427,11 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
     const float eps = hp.layer_norm_eps;
     const float KQscale = 1.0f / sqrtf(float(n_state_head));
     
-    struct ggml_tensor * inpL = ggml_new_tensor_2d(enc_ctx, GGML_TYPE_F32, n_state, n_ctx);
+    ggml_tensor * inpL = ggml_new_tensor_2d(enc_ctx, GGML_TYPE_F32, n_state, n_ctx);
     ggml_set_name(inpL, "enc_input");
     ggml_set_input(inpL);
     
-    struct ggml_tensor * cur = inpL;
+    ggml_tensor * cur = inpL;
     
     for (int il = 0; il < n_layer; ++il) {
         const auto & layer = model_.layers[il];
@@ -448,40 +447,40 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         }
         
         {
-            struct ggml_tensor * Qcur = ggml_mul_mat(enc_ctx, layer.attn_q_w, cur);
+            ggml_tensor * Qcur = ggml_mul_mat(enc_ctx, layer.attn_q_w, cur);
             if (layer.attn_q_b) {
                 Qcur = ggml_add(enc_ctx, Qcur, layer.attn_q_b);
             }
             
-            struct ggml_tensor * Kcur = ggml_mul_mat(enc_ctx, layer.attn_k_w, cur);
+            ggml_tensor * Kcur = ggml_mul_mat(enc_ctx, layer.attn_k_w, cur);
             if (layer.attn_k_b) {
                 Kcur = ggml_add(enc_ctx, Kcur, layer.attn_k_b);
             }
             
-            struct ggml_tensor * Vcur = ggml_mul_mat(enc_ctx, layer.attn_v_w, cur);
+            ggml_tensor * Vcur = ggml_mul_mat(enc_ctx, layer.attn_v_w, cur);
             if (layer.attn_v_b) {
                 Vcur = ggml_add(enc_ctx, Vcur, layer.attn_v_b);
             }
             
-            struct ggml_tensor * Q = ggml_permute(enc_ctx,
+            ggml_tensor * Q = ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Qcur, n_state_head, n_head, n_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * K = ggml_permute(enc_ctx,
+            ggml_tensor * K = ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Kcur, n_state_head, n_head, n_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * KQ = ggml_mul_mat(enc_ctx, K, Q);
+            ggml_tensor * KQ = ggml_mul_mat(enc_ctx, K, Q);
             
-            struct ggml_tensor * KQ_soft_max = ggml_soft_max_ext(enc_ctx, KQ, nullptr, KQscale, 0.0f);
+            ggml_tensor * KQ_soft_max = ggml_soft_max_ext(enc_ctx, KQ, nullptr, KQscale, 0.0f);
             
-            struct ggml_tensor * V = ggml_cont(enc_ctx, ggml_permute(enc_ctx,
+            ggml_tensor * V = ggml_cont(enc_ctx, ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Vcur, n_state_head, n_head, n_ctx),
                 1, 2, 0, 3));
             
-            struct ggml_tensor * KQV = ggml_mul_mat(enc_ctx, V, KQ_soft_max);
+            ggml_tensor * KQV = ggml_mul_mat(enc_ctx, V, KQ_soft_max);
             
-            struct ggml_tensor * KQV_merged = ggml_permute(enc_ctx, KQV, 0, 2, 1, 3);
+            ggml_tensor * KQV_merged = ggml_permute(enc_ctx, KQV, 0, 2, 1, 3);
             
             cur = ggml_cont_2d(enc_ctx, KQV_merged, n_state, n_ctx);
         }
@@ -495,7 +494,7 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         
         cur = ggml_add(enc_ctx, cur, inpL);
         
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
         
         {
             {
@@ -560,7 +559,7 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         return false;
     }
     
-    struct ggml_tensor * enc_input = ggml_graph_get_tensor(gf_enc, "enc_input");
+    ggml_tensor * enc_input = ggml_graph_get_tensor(gf_enc, "enc_input");
     if (!enc_input) {
         error_msg_ = "Failed to find enc_input tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -580,7 +579,7 @@ bool AudioEncoder::encode(const float * mel_data, int n_mel, int n_frames,
         }
     }
     
-    struct ggml_tensor * embd_enc = ggml_graph_get_tensor(gf_enc, "embd_enc");
+    ggml_tensor * embd_enc = ggml_graph_get_tensor(gf_enc, "embd_enc");
     if (!embd_enc) {
         error_msg_ = "Failed to find embd_enc tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -614,14 +613,14 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
     
     const int n_state = model_.hparams.d_model;
     
-    struct ggml_cgraph * gf_conv = build_graph_conv(n_frames);
+    ggml_cgraph * gf_conv = build_graph_conv(n_frames);
     
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf_conv)) {
         error_msg_ = "Failed to allocate conv graph";
         return false;
     }
     
-    struct ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
+    ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
     if (!mel_tensor) {
         error_msg_ = "Failed to find mel tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -643,7 +642,7 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
         return false;
     }
     
-    struct ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
+    ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
     if (!embd_conv) {
         error_msg_ = "Failed to find embd_conv tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -666,14 +665,14 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
     
     state_.compute_meta.resize(ggml_tensor_overhead() * QWEN3_ASR_MAX_NODES + ggml_graph_overhead());
     
-    struct ggml_init_params enc_params = {
+    ggml_init_params enc_params = {
         state_.compute_meta.size(),
         state_.compute_meta.data(),
         true,
     };
     
-    struct ggml_context * enc_ctx = ggml_init(enc_params);
-    struct ggml_cgraph * gf_enc = ggml_new_graph_custom(enc_ctx, QWEN3_ASR_MAX_NODES, false);
+    ggml_context * enc_ctx = ggml_init(enc_params);
+    ggml_cgraph * gf_enc = ggml_new_graph_custom(enc_ctx, QWEN3_ASR_MAX_NODES, false);
     
     const auto & hp = model_.hparams;
     const int n_head = hp.n_attention_heads;
@@ -682,11 +681,11 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
     const float eps = hp.layer_norm_eps;
     const float KQscale = 1.0f / sqrtf(float(n_state_head));
     
-    struct ggml_tensor * inpL = ggml_new_tensor_2d(enc_ctx, GGML_TYPE_F32, n_state, out_ctx);
+    ggml_tensor * inpL = ggml_new_tensor_2d(enc_ctx, GGML_TYPE_F32, n_state, out_ctx);
     ggml_set_name(inpL, "enc_input");
     ggml_set_input(inpL);
     
-    struct ggml_tensor * cur = inpL;
+    ggml_tensor * cur = inpL;
     
     for (int il = 0; il < n_layer; ++il) {
         const auto & layer = model_.layers[il];
@@ -702,40 +701,40 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
         }
         
         {
-            struct ggml_tensor * Qcur = ggml_mul_mat(enc_ctx, layer.attn_q_w, cur);
+            ggml_tensor * Qcur = ggml_mul_mat(enc_ctx, layer.attn_q_w, cur);
             if (layer.attn_q_b) {
                 Qcur = ggml_add(enc_ctx, Qcur, layer.attn_q_b);
             }
             
-            struct ggml_tensor * Kcur = ggml_mul_mat(enc_ctx, layer.attn_k_w, cur);
+            ggml_tensor * Kcur = ggml_mul_mat(enc_ctx, layer.attn_k_w, cur);
             if (layer.attn_k_b) {
                 Kcur = ggml_add(enc_ctx, Kcur, layer.attn_k_b);
             }
             
-            struct ggml_tensor * Vcur = ggml_mul_mat(enc_ctx, layer.attn_v_w, cur);
+            ggml_tensor * Vcur = ggml_mul_mat(enc_ctx, layer.attn_v_w, cur);
             if (layer.attn_v_b) {
                 Vcur = ggml_add(enc_ctx, Vcur, layer.attn_v_b);
             }
             
-            struct ggml_tensor * Q = ggml_permute(enc_ctx,
+            ggml_tensor * Q = ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Qcur, n_state_head, n_head, out_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * K = ggml_permute(enc_ctx,
+            ggml_tensor * K = ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Kcur, n_state_head, n_head, out_ctx),
                 0, 2, 1, 3);
             
-            struct ggml_tensor * KQ = ggml_mul_mat(enc_ctx, K, Q);
+            ggml_tensor * KQ = ggml_mul_mat(enc_ctx, K, Q);
             
-            struct ggml_tensor * KQ_soft_max = ggml_soft_max_ext(enc_ctx, KQ, nullptr, KQscale, 0.0f);
+            ggml_tensor * KQ_soft_max = ggml_soft_max_ext(enc_ctx, KQ, nullptr, KQscale, 0.0f);
             
-            struct ggml_tensor * V = ggml_cont(enc_ctx, ggml_permute(enc_ctx,
+            ggml_tensor * V = ggml_cont(enc_ctx, ggml_permute(enc_ctx,
                 ggml_reshape_3d(enc_ctx, Vcur, n_state_head, n_head, out_ctx),
                 1, 2, 0, 3));
             
-            struct ggml_tensor * KQV = ggml_mul_mat(enc_ctx, V, KQ_soft_max);
+            ggml_tensor * KQV = ggml_mul_mat(enc_ctx, V, KQ_soft_max);
             
-            struct ggml_tensor * KQV_merged = ggml_permute(enc_ctx, KQV, 0, 2, 1, 3);
+            ggml_tensor * KQV_merged = ggml_permute(enc_ctx, KQV, 0, 2, 1, 3);
             
             cur = ggml_cont_2d(enc_ctx, KQV_merged, n_state, out_ctx);
         }
@@ -749,7 +748,7 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
         
         cur = ggml_add(enc_ctx, cur, inpL);
         
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
         
         {
             {
@@ -814,7 +813,7 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
         return false;
     }
     
-    struct ggml_tensor * enc_input = ggml_graph_get_tensor(gf_enc, "enc_input");
+    ggml_tensor * enc_input = ggml_graph_get_tensor(gf_enc, "enc_input");
     if (!enc_input) {
         error_msg_ = "Failed to find enc_input tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -831,7 +830,7 @@ bool AudioEncoder::encode_no_chunk(const float * mel_data, int n_mel, int n_fram
         return false;
     }
     
-    struct ggml_tensor * embd_enc = ggml_graph_get_tensor(gf_enc, "embd_enc");
+    ggml_tensor * embd_enc = ggml_graph_get_tensor(gf_enc, "embd_enc");
     if (!embd_enc) {
         error_msg_ = "Failed to find embd_enc tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -862,17 +861,15 @@ bool AudioEncoder::encode_conv_only(const float * mel_data, int n_mel, int n_fra
         error_msg_ = "Mel bins mismatch";
         return false;
     }
-    
-    const int n_state = model_.hparams.d_model;
-    
-    struct ggml_cgraph * gf_conv = build_graph_conv(n_frames);
+
+    ggml_cgraph * gf_conv = build_graph_conv(n_frames);
     
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf_conv)) {
         error_msg_ = "Failed to allocate conv graph";
         return false;
     }
     
-    struct ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
+    ggml_tensor * mel_tensor = ggml_graph_get_tensor(gf_conv, "mel");
     if (!mel_tensor) {
         error_msg_ = "Failed to find mel tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -894,7 +891,7 @@ bool AudioEncoder::encode_conv_only(const float * mel_data, int n_mel, int n_fra
         return false;
     }
     
-    struct ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
+    ggml_tensor * embd_conv = ggml_graph_get_tensor(gf_conv, "embd_conv");
     if (!embd_conv) {
         error_msg_ = "Failed to find embd_conv tensor";
         ggml_backend_sched_reset(state_.sched);

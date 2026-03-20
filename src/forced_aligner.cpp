@@ -1,18 +1,17 @@
 #include "forced_aligner.h"
 #include "mel_spectrogram.h"
+#include "mman_multiplatform.h"
+#include "stat_multiplatform.h"
 
 #include <cstdio>
-#include <cstring>
 #include <cmath>
 #include <climits>
 #include <chrono>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <ggml-impl.h>
 
 #define QWEN3_FA_MAX_NODES 16384
 
@@ -55,13 +54,13 @@ ForcedAligner::~ForcedAligner() {
 }
 
 bool ForcedAligner::load_model(const std::string & model_path) {
-    struct ggml_context * meta_ctx = nullptr;
-    struct gguf_init_params params = {
+    ggml_context * meta_ctx = nullptr;
+    gguf_init_params params = {
         /*.no_alloc =*/ true,
         /*.ctx      =*/ &meta_ctx,
     };
     
-    struct gguf_context * ctx = gguf_init_from_file(model_path.c_str(), params);
+    gguf_context * ctx = gguf_init_from_file(model_path.c_str(), params);
     if (!ctx) {
         error_msg_ = "Failed to open GGUF file: " + model_path;
         return false;
@@ -133,16 +132,22 @@ bool ForcedAligner::load_model(const std::string & model_path) {
     return true;
 }
 
-bool ForcedAligner::parse_hparams(struct gguf_context * ctx) {
+bool ForcedAligner::parse_hparams(gguf_context * ctx) {
     auto get_u32 = [&](const char * key, int32_t default_val) -> int32_t {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("ForcedAligner::parse_hparams(): Failed to find key '%s', using default value %d\n", key, default_val);
+            return default_val;
+        }
         return (int32_t)gguf_get_val_u32(ctx, idx);
     };
     
     auto get_f32 = [&](const char * key, float default_val) -> float {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("ForcedAligner::parse_hparams(): Failed to find key '%s', using default value %f\n", key, default_val);
+            return default_val;
+        }
         return gguf_get_val_f32(ctx, idx);
     };
     
@@ -174,12 +179,12 @@ bool ForcedAligner::parse_hparams(struct gguf_context * ctx) {
     return true;
 }
 
-bool ForcedAligner::create_tensors(struct gguf_context * ctx) {
+bool ForcedAligner::create_tensors(gguf_context * ctx) {
     const int64_t n_tensors = gguf_get_n_tensors(ctx);
     const auto & hp = model_.hparams;
     
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
@@ -196,7 +201,7 @@ bool ForcedAligner::create_tensors(struct gguf_context * ctx) {
     
     for (int64_t i = 0; i < n_tensors; ++i) {
         const char * name = gguf_get_tensor_name(ctx, i);
-        enum ggml_type type = gguf_get_tensor_type(ctx, i);
+        ggml_type type = gguf_get_tensor_type(ctx, i);
         
         int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
         int n_dims = 0;
@@ -321,7 +326,7 @@ bool ForcedAligner::create_tensors(struct gguf_context * ctx) {
         
         if (n_dims == 0) continue;
         
-        struct ggml_tensor * tensor = ggml_new_tensor(model_.ctx, type, n_dims, ne);
+        ggml_tensor * tensor = ggml_new_tensor(model_.ctx, type, n_dims, ne);
         if (!tensor) {
             error_msg_ = "Failed to create tensor: " + std::string(name);
             return false;
@@ -408,15 +413,15 @@ bool ForcedAligner::create_tensors(struct gguf_context * ctx) {
     return true;
 }
 
-bool ForcedAligner::load_tensor_data(const std::string & path, struct gguf_context * ctx) {
-    int fd = open(path.c_str(), O_RDONLY);
+bool ForcedAligner::load_tensor_data(const std::string & path, gguf_context * ctx) {
+    int fd = open(path.c_str(), O_BINARY);
     if (fd < 0) {
         error_msg_ = "Failed to open file for mmap: " + path;
         return false;
     }
     
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
+    struct stat64 st {};
+    if (fstat64(fd, &st) != 0) {
         error_msg_ = "Failed to stat file: " + path;
         close(fd);
         return false;
@@ -466,7 +471,7 @@ bool ForcedAligner::load_tensor_data(const std::string & path, struct gguf_conte
         auto it = model_.tensors.find(name);
         if (it == model_.tensors.end()) continue;
         
-        struct ggml_tensor * tensor = it->second;
+        ggml_tensor * tensor = it->second;
         tensor->buffer = model_.buffer;
         tensor->data = data_base + offset;
     }
@@ -474,7 +479,7 @@ bool ForcedAligner::load_tensor_data(const std::string & path, struct gguf_conte
     return true;
 }
 
-bool ForcedAligner::load_vocab(struct gguf_context * ctx) {
+bool ForcedAligner::load_vocab(gguf_context * ctx) {
     int64_t tokens_idx = gguf_find_key(ctx, "tokenizer.ggml.tokens");
     if (tokens_idx < 0) {
         error_msg_ = "Vocabulary not found in GGUF file";
@@ -522,7 +527,7 @@ bool ForcedAligner::init_kv_cache(int32_t n_ctx) {
     const size_t n_tensors = hp.text_decoder_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
@@ -621,37 +626,37 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
 
     const int32_t max_out_w = chunk_output_len(max_chunk_len);
 
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
 
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_FA_MAX_NODES, false);
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_FA_MAX_NODES, false);
 
-    struct ggml_tensor * mel_batch = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32,
+    ggml_tensor * mel_batch = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32,
         max_chunk_len, n_mel, 1, n_chunks);
     ggml_set_name(mel_batch, "mel_batch");
     ggml_set_input(mel_batch);
 
-    struct ggml_tensor * cur = ggml_conv_2d(ctx0, model_.conv2d1_w, mel_batch, 2, 2, 1, 1, 1, 1);
+    ggml_tensor * cur = ggml_conv_2d(ctx0, model_.conv2d1_w, mel_batch, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d1_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d1_b, 1, 1, hp.audio_conv_channels, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d1_b, 1, 1, hp.audio_conv_channels, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     cur = ggml_gelu(ctx0, cur);
 
     cur = ggml_conv_2d(ctx0, model_.conv2d2_w, cur, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d2_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d2_b, 1, 1, hp.audio_conv_channels, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d2_b, 1, 1, hp.audio_conv_channels, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     cur = ggml_gelu(ctx0, cur);
 
     cur = ggml_conv_2d(ctx0, model_.conv2d3_w, cur, 2, 2, 1, 1, 1, 1);
     if (model_.conv2d3_b) {
-        struct ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d3_b, 1, 1, hp.audio_conv_channels, 1);
+        ggml_tensor * bias = ggml_reshape_4d(ctx0, model_.conv2d3_b, 1, 1, hp.audio_conv_channels, 1);
         cur = ggml_add(ctx0, cur, bias);
     }
     cur = ggml_gelu(ctx0, cur);
@@ -697,7 +702,7 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
             }
         }
 
-        struct ggml_tensor * mel_t = ggml_graph_get_tensor(gf, "mel_batch");
+        ggml_tensor * mel_t = ggml_graph_get_tensor(gf, "mel_batch");
         ggml_backend_tensor_set(mel_t, mel_batch_data.data(), 0, batch_size * sizeof(float));
     }
 
@@ -708,7 +713,7 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
         return false;
     }
 
-    struct ggml_tensor * conv_out_t = ggml_graph_get_tensor(gf, "conv_out");
+    ggml_tensor * conv_out_t = ggml_graph_get_tensor(gf, "conv_out");
     std::vector<float> conv_all(n_state * conv_out_w * n_chunks);
     ggml_backend_tensor_get(conv_out_t, conv_all.data(), 0, conv_all.size() * sizeof(float));
 
@@ -768,15 +773,15 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
     ctx0 = ggml_init(params);
     gf = ggml_new_graph_custom(ctx0, QWEN3_FA_MAX_NODES, false);
 
-    struct ggml_tensor * inp_hidden = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_state, n_ctx);
+    ggml_tensor * inp_hidden = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_state, n_ctx);
     ggml_set_name(inp_hidden, "inp_hidden");
     ggml_set_input(inp_hidden);
 
-    struct ggml_tensor * mask_tensor = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_ctx, n_ctx);
+    ggml_tensor * mask_tensor = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_ctx, n_ctx);
     ggml_set_name(mask_tensor, "attn_mask");
     ggml_set_input(mask_tensor);
 
-    struct ggml_tensor * inpL = inp_hidden;
+    ggml_tensor * inpL = inp_hidden;
 
     for (int il = 0; il < n_layer; ++il) {
         const auto & layer = model_.encoder_layers[il];
@@ -789,34 +794,34 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
             cur = ggml_add(ctx0, cur, layer.attn_norm_b);
         }
 
-        struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q_w, cur);
+        ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q_w, cur);
         if (layer.attn_q_b) Qcur = ggml_add(ctx0, Qcur, layer.attn_q_b);
 
-        struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k_w, cur);
+        ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k_w, cur);
         if (layer.attn_k_b) Kcur = ggml_add(ctx0, Kcur, layer.attn_k_b);
 
-        struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v_w, cur);
+        ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v_w, cur);
         if (layer.attn_v_b) Vcur = ggml_add(ctx0, Vcur, layer.attn_v_b);
 
-        struct ggml_tensor * Q = ggml_permute(ctx0,
+        ggml_tensor * Q = ggml_permute(ctx0,
             ggml_reshape_3d(ctx0, Qcur, n_state_head, n_head, n_ctx),
             0, 2, 1, 3);
 
-        struct ggml_tensor * K = ggml_permute(ctx0,
+        ggml_tensor * K = ggml_permute(ctx0,
             ggml_reshape_3d(ctx0, Kcur, n_state_head, n_head, n_ctx),
             0, 2, 1, 3);
 
-        struct ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
+        ggml_tensor * KQ = ggml_mul_mat(ctx0, K, Q);
 
-        struct ggml_tensor * KQ_soft_max = ggml_soft_max_ext(ctx0, KQ, mask_tensor, KQscale, 0.0f);
+        ggml_tensor * KQ_soft_max = ggml_soft_max_ext(ctx0, KQ, mask_tensor, KQscale, 0.0f);
 
-        struct ggml_tensor * V = ggml_cont(ctx0, ggml_permute(ctx0,
+        ggml_tensor * V = ggml_cont(ctx0, ggml_permute(ctx0,
             ggml_reshape_3d(ctx0, Vcur, n_state_head, n_head, n_ctx),
             1, 2, 0, 3));
 
-        struct ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ_soft_max);
+        ggml_tensor * KQV = ggml_mul_mat(ctx0, V, KQ_soft_max);
 
-        struct ggml_tensor * KQV_merged = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
+        ggml_tensor * KQV_merged = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
 
         cur = ggml_cont_2d(ctx0, KQV_merged, n_state, n_ctx);
 
@@ -827,7 +832,7 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
 
         cur = ggml_add(ctx0, cur, inpL);
 
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
 
         cur = ggml_norm(ctx0, inpFF, eps);
         if (layer.ffn_norm_w) {
@@ -888,11 +893,11 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
         return false;
     }
 
-    struct ggml_tensor * hidden_t = ggml_graph_get_tensor(gf, "inp_hidden");
+    ggml_tensor * hidden_t = ggml_graph_get_tensor(gf, "inp_hidden");
     ggml_backend_tensor_set(hidden_t, hidden_flat.data(), 0,
                             total_out_frames * n_state * sizeof(float));
 
-    struct ggml_tensor * mask_t = ggml_graph_get_tensor(gf, "attn_mask");
+    ggml_tensor * mask_t = ggml_graph_get_tensor(gf, "attn_mask");
     ggml_backend_tensor_set(mask_t, attn_mask.data(), 0,
                             n_ctx * n_ctx * sizeof(float));
 
@@ -903,7 +908,7 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
         return false;
     }
 
-    struct ggml_tensor * audio_out = ggml_graph_get_tensor(gf, "audio_enc_out");
+    ggml_tensor * audio_out = ggml_graph_get_tensor(gf, "audio_enc_out");
     if (!audio_out) {
         error_msg_ = "Failed to find audio encoder output tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -923,7 +928,7 @@ bool ForcedAligner::encode_audio(const float * mel_data, int n_mel, int n_frames
     return true;
 }
 
-struct ggml_cgraph * ForcedAligner::build_decoder_graph(
+ggml_cgraph * ForcedAligner::build_decoder_graph(
     const int32_t * tokens, int32_t n_tokens,
     const float * audio_embd, int32_t n_audio,
     int32_t audio_start_pos) {
@@ -937,35 +942,35 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
     const float rope_theta = hp.text_rope_theta;
     const int n_layer = hp.text_decoder_layers;
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
     
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_FA_MAX_NODES, false);
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_FA_MAX_NODES, false);
     
-    struct ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_name(inp_tokens, "inp_tokens");
     ggml_set_input(inp_tokens);
     
-    struct ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_name(inp_pos, "inp_pos");
     ggml_set_input(inp_pos);
     
-    struct ggml_tensor * inp_audio = nullptr;
+    ggml_tensor * inp_audio = nullptr;
     if (audio_embd && n_audio > 0) {
         inp_audio = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hidden_size, n_audio);
         ggml_set_name(inp_audio, "inp_audio");
         ggml_set_input(inp_audio);
     }
     
-    struct ggml_tensor * cur = ggml_get_rows(ctx0, model_.token_embd, inp_tokens);
+    ggml_tensor * cur = ggml_get_rows(ctx0, model_.token_embd, inp_tokens);
     
     if (inp_audio && n_audio > 0 && audio_start_pos >= 0 && audio_start_pos + n_audio <= n_tokens) {
-        struct ggml_tensor * embd_before = nullptr;
-        struct ggml_tensor * embd_after = nullptr;
+        ggml_tensor * embd_before = nullptr;
+        ggml_tensor * embd_after = nullptr;
         
         if (audio_start_pos > 0) {
             embd_before = ggml_view_2d(ctx0, cur, hidden_size, audio_start_pos,
@@ -980,7 +985,7 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
         }
         
         if (embd_before && embd_after) {
-            struct ggml_tensor * tmp = ggml_concat(ctx0, embd_before, inp_audio, 1);
+            ggml_tensor * tmp = ggml_concat(ctx0, embd_before, inp_audio, 1);
             cur = ggml_concat(ctx0, tmp, embd_after, 1);
         } else if (embd_before) {
             cur = ggml_concat(ctx0, embd_before, inp_audio, 1);
@@ -991,11 +996,11 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
         }
     }
     
-    struct ggml_tensor * inpL = cur;
+    ggml_tensor * inpL = cur;
     
     const float KQscale = 1.0f / sqrtf(float(head_dim));
     
-    struct ggml_tensor * causal_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, n_tokens, n_tokens);
+    ggml_tensor * causal_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, n_tokens, n_tokens);
     ggml_set_name(causal_mask, "causal_mask");
     ggml_set_input(causal_mask);
     
@@ -1012,9 +1017,9 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
         cur = ggml_rms_norm(ctx0, inpL, eps);
         cur = ggml_mul(ctx0, cur, layer.attn_norm);
         
-        struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q, cur);
-        struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k, cur);
-        struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v, cur);
+        ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q, cur);
+        ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k, cur);
+        ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v, cur);
         
         Qcur = ggml_reshape_3d(ctx0, Qcur, head_dim, n_head, n_tokens);
         Kcur = ggml_reshape_3d(ctx0, Kcur, head_dim, n_kv_head, n_tokens);
@@ -1038,9 +1043,9 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
                              head_dim, GGML_ROPE_TYPE_NEOX, 0,
                              rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
         
-        struct ggml_tensor * Qfa = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
-        struct ggml_tensor * Kfa = ggml_permute(ctx0, Kcur, 0, 2, 1, 3);
-        struct ggml_tensor * Vfa = ggml_cast(ctx0, ggml_permute(ctx0, Vcur, 0, 2, 1, 3), GGML_TYPE_F16);
+        ggml_tensor * Qfa = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
+        ggml_tensor * Kfa = ggml_permute(ctx0, Kcur, 0, 2, 1, 3);
+        ggml_tensor * Vfa = ggml_cast(ctx0, ggml_permute(ctx0, Vcur, 0, 2, 1, 3), GGML_TYPE_F16);
         
         cur = ggml_flash_attn_ext(ctx0, Qfa, Kfa, Vfa, causal_mask, KQscale, 0.0f, 0.0f);
         ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
@@ -1048,13 +1053,13 @@ struct ggml_cgraph * ForcedAligner::build_decoder_graph(
         
         cur = ggml_mul_mat(ctx0, layer.attn_output, cur);
         cur = ggml_add(ctx0, cur, inpL);
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
         
         cur = ggml_rms_norm(ctx0, inpFF, eps);
         cur = ggml_mul(ctx0, cur, layer.ffn_norm);
         
-        struct ggml_tensor * gate = ggml_mul_mat(ctx0, layer.ffn_gate, cur);
-        struct ggml_tensor * up = ggml_mul_mat(ctx0, layer.ffn_up, cur);
+        ggml_tensor * gate = ggml_mul_mat(ctx0, layer.ffn_gate, cur);
+        ggml_tensor * up = ggml_mul_mat(ctx0, layer.ffn_up, cur);
         
         gate = ggml_silu(ctx0, gate);
         
@@ -1096,7 +1101,7 @@ bool ForcedAligner::forward_decoder(
         return false;
     }
     
-    struct ggml_cgraph * gf = build_decoder_graph(tokens, n_tokens,
+    ggml_cgraph * gf = build_decoder_graph(tokens, n_tokens,
                                                    audio_embd, n_audio, audio_start_pos);
     if (!gf) {
         error_msg_ = "Failed to build decoder graph";
@@ -1108,7 +1113,7 @@ bool ForcedAligner::forward_decoder(
         return false;
     }
     
-    struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
+    ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
     if (!inp_tokens) {
         error_msg_ = "Failed to find inp_tokens tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -1116,7 +1121,7 @@ bool ForcedAligner::forward_decoder(
     }
     ggml_backend_tensor_set(inp_tokens, tokens, 0, n_tokens * sizeof(int32_t));
     
-    struct ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
+    ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
     if (inp_pos) {
         std::vector<int32_t> positions(n_tokens);
         for (int i = 0; i < n_tokens; ++i) {
@@ -1125,7 +1130,7 @@ bool ForcedAligner::forward_decoder(
         ggml_backend_tensor_set(inp_pos, positions.data(), 0, n_tokens * sizeof(int32_t));
     }
     
-    struct ggml_tensor * mask_t = ggml_graph_get_tensor(gf, "causal_mask");
+    ggml_tensor * mask_t = ggml_graph_get_tensor(gf, "causal_mask");
     if (mask_t) {
         std::vector<ggml_fp16_t> mask_data((size_t)n_tokens * n_tokens);
         const ggml_fp16_t zero_f16 = ggml_fp32_to_fp16(0.0f);
@@ -1139,7 +1144,7 @@ bool ForcedAligner::forward_decoder(
     }
     
     if (audio_embd && n_audio > 0) {
-        struct ggml_tensor * inp_audio = ggml_graph_get_tensor(gf, "inp_audio");
+        ggml_tensor * inp_audio = ggml_graph_get_tensor(gf, "inp_audio");
         if (inp_audio) {
             ggml_backend_tensor_set(inp_audio, audio_embd, 0, 
                                     n_audio * model_.hparams.text_hidden_size * sizeof(float));
@@ -1152,7 +1157,7 @@ bool ForcedAligner::forward_decoder(
         return false;
     }
     
-    struct ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+    ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
     if (!logits) {
         error_msg_ = "Failed to find logits tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -1400,7 +1405,7 @@ static std::vector<std::string> split_utf8_chars(const std::string & s) {
     std::vector<std::string> chars;
     size_t i = 0;
     while (i < s.size()) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
+        auto c = static_cast<unsigned char>(s[i]);
         size_t len = 1;
         if ((c & 0xE0) == 0xC0) len = 2;
         else if ((c & 0xF0) == 0xE0) len = 3;
@@ -1557,7 +1562,7 @@ bool ForcedAligner::load_korean_dict(const std::string & dict_path) {
         }
     }
 
-    fprintf(stderr, "Korean dictionary loaded: %zu words\n", model_.ko_dict.size());
+    GGML_LOG_INFO("%s: Korean dictionary loaded: %zu words", __func__, model_.ko_dict.size());
     return true;
 }
 
@@ -1586,10 +1591,10 @@ std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
         }
     }
 
-    for (size_t w = 0; w < raw_words.size(); ++w) {
-        words.push_back(raw_words[w]);
+    for (const auto & raw_word : raw_words) {
+        words.push_back(raw_word);
 
-        std::string bpe_str = bytes_to_bpe_string(raw_words[w]);
+        std::string bpe_str = bytes_to_bpe_string(raw_word);
         std::vector<std::string> subwords = bpe_encode_word(bpe_str, model_.bpe_ranks);
 
         for (const auto & sw : subwords) {
@@ -1597,7 +1602,7 @@ std::vector<int32_t> ForcedAligner::tokenize_with_timestamps(
             if (it != model_.token_to_id.end()) {
                 tokens.push_back(it->second);
             } else {
-                fprintf(stderr, "BPE tokenizer: unknown subword token '%s'\n", sw.c_str());
+                GGML_LOG_WARN("%s: BPE tokenizer: unknown subword token '%s'\n", __func__, sw.c_str());
             }
         }
 

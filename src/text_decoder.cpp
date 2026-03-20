@@ -1,14 +1,12 @@
 #include "text_decoder.h"
 #include "timing.h"
+#include "mman_multiplatform.h"
+#include "stat_multiplatform.h"
 
 #include <cmath>
-#include <cstring>
 #include <cstdio>
-#include <fstream>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <ggml-impl.h>
 
 #define QWEN3_ASR_MAX_NODES 8192
 
@@ -34,13 +32,13 @@ TextDecoder::~TextDecoder() {
 }
 
 bool TextDecoder::load_model(const std::string & model_path) {
-    struct ggml_context * meta_ctx = nullptr;
-    struct gguf_init_params params = {
+    ggml_context * meta_ctx = nullptr;
+    gguf_init_params params = {
         /*.no_alloc =*/ true,
         /*.ctx      =*/ &meta_ctx,
     };
     
-    struct gguf_context * ctx = gguf_init_from_file(model_path.c_str(), params);
+    gguf_context * ctx = gguf_init_from_file(model_path.c_str(), params);
     if (!ctx) {
         error_msg_ = "Failed to open GGUF file: " + model_path;
         return false;
@@ -111,16 +109,22 @@ bool TextDecoder::load_model(const std::string & model_path) {
     return true;
 }
 
-bool TextDecoder::parse_config(struct gguf_context * ctx) {
+bool TextDecoder::parse_config(gguf_context * ctx) {
     auto get_u32 = [&](const char * key, int32_t default_val) -> int32_t {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("TextDecoder::parse_config(): Failed to find key '%s', using default value %d\n", key, default_val);
+            return default_val;
+        }
         return (int32_t)gguf_get_val_u32(ctx, idx);
     };
     
     auto get_f32 = [&](const char * key, float default_val) -> float {
         int64_t idx = gguf_find_key(ctx, key);
-        if (idx < 0) return default_val;
+        if (idx < 0) {
+            GGML_LOG_WARN("TextDecoder::parse_config(): Failed to find key '%s', using default value %f\n", key, default_val);
+            return default_val;
+        }
         return gguf_get_val_f32(ctx, idx);
     };
     
@@ -144,12 +148,12 @@ bool TextDecoder::parse_config(struct gguf_context * ctx) {
     return true;
 }
 
-bool TextDecoder::create_tensors(struct gguf_context * ctx) {
+bool TextDecoder::create_tensors(gguf_context * ctx) {
     const int64_t n_tensors = gguf_get_n_tensors(ctx);
     const auto & cfg = model_.config;
     
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
@@ -165,7 +169,7 @@ bool TextDecoder::create_tensors(struct gguf_context * ctx) {
     
     for (int64_t i = 0; i < n_tensors; ++i) {
         const char * name = gguf_get_tensor_name(ctx, i);
-        enum ggml_type type = gguf_get_tensor_type(ctx, i);
+        ggml_type type = gguf_get_tensor_type(ctx, i);
         
         int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
         int n_dims = 0;
@@ -265,15 +269,15 @@ bool TextDecoder::create_tensors(struct gguf_context * ctx) {
     return true;
 }
 
-bool TextDecoder::load_tensor_data(const std::string & path, struct gguf_context * ctx) {
-    int fd = open(path.c_str(), O_RDONLY);
+bool TextDecoder::load_tensor_data(const std::string & path, gguf_context * ctx) {
+    int fd = open(path.c_str(), O_BINARY);
     if (fd < 0) {
         error_msg_ = "Failed to open file for mmap: " + path;
         return false;
     }
     
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
+    struct stat64 st{};
+    if (fstat64(fd, &st) != 0) {
         error_msg_ = "Failed to stat file: " + path;
         close(fd);
         return false;
@@ -324,7 +328,7 @@ bool TextDecoder::load_tensor_data(const std::string & path, struct gguf_context
         auto it = model_.tensors.find(name);
         if (it == model_.tensors.end()) continue;
         
-        struct ggml_tensor * tensor = it->second;
+        ggml_tensor * tensor = it->second;
         tensor->buffer = model_.buffer;
         tensor->data = data_base + offset;
     }
@@ -346,7 +350,7 @@ bool TextDecoder::init_kv_cache(int32_t n_ctx) {
     const size_t n_tensors = cfg.n_decoder_layers * 2;
     const size_t ctx_size = n_tensors * ggml_tensor_overhead();
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ ctx_size,
         /*.mem_buffer =*/ nullptr,
         /*.no_alloc   =*/ true,
@@ -400,35 +404,35 @@ struct ggml_cgraph * TextDecoder::build_graph(
     const float rope_theta = cfg.rope_theta;
     const int n_layer = cfg.n_decoder_layers;
     
-    struct ggml_init_params params = {
+    ggml_init_params params = {
         /*.mem_size   =*/ state_.compute_meta.size(),
         /*.mem_buffer =*/ state_.compute_meta.data(),
         /*.no_alloc   =*/ true,
     };
     
-    struct ggml_context * ctx0 = ggml_init(params);
-    struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_ASR_MAX_NODES, false);
+    ggml_context * ctx0 = ggml_init(params);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx0, QWEN3_ASR_MAX_NODES, false);
     
-    struct ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_name(inp_tokens, "inp_tokens");
     ggml_set_input(inp_tokens);
     
-    struct ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_name(inp_pos, "inp_pos");
     ggml_set_input(inp_pos);
     
-    struct ggml_tensor * inp_audio = nullptr;
+    ggml_tensor * inp_audio = nullptr;
     if (audio_embd && n_audio > 0) {
         inp_audio = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hidden_size, n_audio);
         ggml_set_name(inp_audio, "inp_audio");
         ggml_set_input(inp_audio);
     }
     
-    struct ggml_tensor * cur = ggml_get_rows(ctx0, model_.token_embd, inp_tokens);
+    ggml_tensor * cur = ggml_get_rows(ctx0, model_.token_embd, inp_tokens);
     
     if (inp_audio && n_audio > 0 && audio_start_pos >= 0 && audio_start_pos + n_audio <= n_tokens) {
-        struct ggml_tensor * embd_before = nullptr;
-        struct ggml_tensor * embd_after = nullptr;
+        ggml_tensor * embd_before = nullptr;
+        ggml_tensor * embd_after = nullptr;
         
         if (audio_start_pos > 0) {
             embd_before = ggml_view_2d(ctx0, cur, hidden_size, audio_start_pos,
@@ -443,7 +447,7 @@ struct ggml_cgraph * TextDecoder::build_graph(
         }
         
         if (embd_before && embd_after) {
-            struct ggml_tensor * tmp = ggml_concat(ctx0, embd_before, inp_audio, 1);
+            ggml_tensor * tmp = ggml_concat(ctx0, embd_before, inp_audio, 1);
             cur = ggml_concat(ctx0, tmp, embd_after, 1);
         } else if (embd_before) {
             cur = ggml_concat(ctx0, embd_before, inp_audio, 1);
@@ -456,13 +460,13 @@ struct ggml_cgraph * TextDecoder::build_graph(
         ggml_set_output(cur);
     }
     
-    struct ggml_tensor * inpL = cur;
+    ggml_tensor * inpL = cur;
     
     const float KQscale = 1.0f / sqrtf(float(head_dim));
     
     // Flash attention causal mask: [n_kv, n_tokens], F16
     int n_kv = n_past + n_tokens;
-    struct ggml_tensor * fa_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, n_kv, n_tokens);
+    ggml_tensor * fa_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F16, n_kv, n_tokens);
     ggml_set_name(fa_mask, "fa_mask");
     ggml_set_input(fa_mask);
     
@@ -478,9 +482,9 @@ struct ggml_cgraph * TextDecoder::build_graph(
         cur = ggml_rms_norm(ctx0, inpL, eps);
         cur = ggml_mul(ctx0, cur, layer.attn_norm);
         
-        struct ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q, cur);
-        struct ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k, cur);
-        struct ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v, cur);
+        ggml_tensor * Qcur = ggml_mul_mat(ctx0, layer.attn_q, cur);
+        ggml_tensor * Kcur = ggml_mul_mat(ctx0, layer.attn_k, cur);
+        ggml_tensor * Vcur = ggml_mul_mat(ctx0, layer.attn_v, cur);
         
         Qcur = ggml_reshape_3d(ctx0, Qcur, head_dim, n_head, n_tokens);
         Kcur = ggml_reshape_3d(ctx0, Kcur, head_dim, n_kv_head, n_tokens);
@@ -504,15 +508,15 @@ struct ggml_cgraph * TextDecoder::build_graph(
                              head_dim, GGML_ROPE_TYPE_NEOX, 0,
                              rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
         
-        struct ggml_tensor * k_cache = state_.cache.k_cache[il];
-        struct ggml_tensor * v_cache = state_.cache.v_cache[il];
+        ggml_tensor * k_cache = state_.cache.k_cache[il];
+        ggml_tensor * v_cache = state_.cache.v_cache[il];
         
-        struct ggml_tensor * k_cache_view = ggml_view_3d(ctx0, k_cache,
+        ggml_tensor * k_cache_view = ggml_view_3d(ctx0, k_cache,
             head_dim, n_kv_head, n_tokens,
             k_cache->nb[1], k_cache->nb[2],
             n_past * k_cache->nb[2]);
         
-        struct ggml_tensor * v_cache_view = ggml_view_3d(ctx0, v_cache,
+        ggml_tensor * v_cache_view = ggml_view_3d(ctx0, v_cache,
             head_dim, n_kv_head, n_tokens,
             v_cache->nb[1], v_cache->nb[2],
             n_past * v_cache->nb[2]);
@@ -520,16 +524,16 @@ struct ggml_cgraph * TextDecoder::build_graph(
         ggml_build_forward_expand(gf, ggml_cpy(ctx0, Kcur, k_cache_view));
         ggml_build_forward_expand(gf, ggml_cpy(ctx0, Vcur, v_cache_view));
         
-        struct ggml_tensor * K = ggml_view_3d(ctx0, k_cache,
+        ggml_tensor * K = ggml_view_3d(ctx0, k_cache,
             head_dim, n_kv_head, n_kv,
             k_cache->nb[1], k_cache->nb[2], 0);
         
-        struct ggml_tensor * V = ggml_view_3d(ctx0, v_cache,
+        ggml_tensor * V = ggml_view_3d(ctx0, v_cache,
             head_dim, n_kv_head, n_kv,
             v_cache->nb[1], v_cache->nb[2], 0);
         
         // flash_attn_ext expects: Q[head_dim, n_tokens, n_head], K[head_dim, n_kv, n_kv_head], V[head_dim, n_kv, n_kv_head]
-        struct ggml_tensor * Qfa = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
+        ggml_tensor * Qfa = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);
         K = ggml_permute(ctx0, K, 0, 2, 1, 3);
         V = ggml_permute(ctx0, V, 0, 2, 1, 3);
         
@@ -539,13 +543,13 @@ struct ggml_cgraph * TextDecoder::build_graph(
         
         cur = ggml_mul_mat(ctx0, layer.attn_output, cur);
         cur = ggml_add(ctx0, cur, inpL);
-        struct ggml_tensor * inpFF = cur;
+        ggml_tensor * inpFF = cur;
         
         cur = ggml_rms_norm(ctx0, inpFF, eps);
         cur = ggml_mul(ctx0, cur, layer.ffn_norm);
         
-        struct ggml_tensor * gate = ggml_mul_mat(ctx0, layer.ffn_gate, cur);
-        struct ggml_tensor * up = ggml_mul_mat(ctx0, layer.ffn_up, cur);
+        ggml_tensor * gate = ggml_mul_mat(ctx0, layer.ffn_gate, cur);
+        ggml_tensor * up = ggml_mul_mat(ctx0, layer.ffn_up, cur);
         
         gate = ggml_silu(ctx0, gate);
         
@@ -606,7 +610,7 @@ bool TextDecoder::forward_with_audio(
         return false;
     }
     
-    struct ggml_cgraph * gf = build_graph(tokens, n_tokens, n_past,
+    ggml_cgraph * gf = build_graph(tokens, n_tokens, n_past,
                                           audio_embd, n_audio, audio_start_pos);
     
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
@@ -614,7 +618,7 @@ bool TextDecoder::forward_with_audio(
         return false;
     }
     
-    struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
+    ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
     if (!inp_tokens) {
         error_msg_ = "Failed to find inp_tokens tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -622,7 +626,7 @@ bool TextDecoder::forward_with_audio(
     }
     ggml_backend_tensor_set(inp_tokens, tokens, 0, n_tokens * sizeof(int32_t));
     
-    struct ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
+    ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
     if (inp_pos) {
         std::vector<int32_t> positions(n_tokens);
         for (int i = 0; i < n_tokens; ++i) {
@@ -631,7 +635,7 @@ bool TextDecoder::forward_with_audio(
         ggml_backend_tensor_set(inp_pos, positions.data(), 0, n_tokens * sizeof(int32_t));
     }
     
-    struct ggml_tensor * fa_mask_t = ggml_graph_get_tensor(gf, "fa_mask");
+    ggml_tensor * fa_mask_t = ggml_graph_get_tensor(gf, "fa_mask");
     if (fa_mask_t) {
         int n_kv = n_past + n_tokens;
         std::vector<ggml_fp16_t> mask_data((size_t)n_kv * n_tokens);
@@ -646,7 +650,7 @@ bool TextDecoder::forward_with_audio(
     }
     
     if (audio_embd && n_audio > 0) {
-        struct ggml_tensor * inp_audio = ggml_graph_get_tensor(gf, "inp_audio");
+        ggml_tensor * inp_audio = ggml_graph_get_tensor(gf, "inp_audio");
         if (inp_audio) {
             ggml_backend_tensor_set(inp_audio, audio_embd, 0, 
                                     n_audio * model_.config.hidden_size * sizeof(float));
@@ -662,7 +666,7 @@ bool TextDecoder::forward_with_audio(
         }
     }
     
-    struct ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+    ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
     if (!logits) {
         error_msg_ = "Failed to find logits tensor";
         ggml_backend_sched_reset(state_.sched);
@@ -695,19 +699,19 @@ bool TextDecoder::forward_debug(const int32_t * tokens, int32_t n_tokens, int32_
         }
     }
     
-    struct ggml_cgraph * gf = build_graph(tokens, n_tokens, n_past, nullptr, 0, -1);
+    ggml_cgraph * gf = build_graph(tokens, n_tokens, n_past, nullptr, 0, -1);
     
     if (!ggml_backend_sched_alloc_graph(state_.sched, gf)) {
         error_msg_ = "Failed to allocate graph";
         return false;
     }
     
-    struct ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
+    ggml_tensor * inp_tokens = ggml_graph_get_tensor(gf, "inp_tokens");
     if (inp_tokens) {
         ggml_backend_tensor_set(inp_tokens, tokens, 0, n_tokens * sizeof(int32_t));
     }
     
-    struct ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
+    ggml_tensor * inp_pos = ggml_graph_get_tensor(gf, "inp_pos");
     if (inp_pos) {
         std::vector<int32_t> positions(n_tokens);
         for (int i = 0; i < n_tokens; ++i) {
@@ -716,7 +720,7 @@ bool TextDecoder::forward_debug(const int32_t * tokens, int32_t n_tokens, int32_
         ggml_backend_tensor_set(inp_pos, positions.data(), 0, n_tokens * sizeof(int32_t));
     }
     
-    struct ggml_tensor * fa_mask_t = ggml_graph_get_tensor(gf, "fa_mask");
+    ggml_tensor * fa_mask_t = ggml_graph_get_tensor(gf, "fa_mask");
     if (fa_mask_t) {
         int n_kv = n_past + n_tokens;
         std::vector<ggml_fp16_t> mask_data((size_t)n_kv * n_tokens);
@@ -736,7 +740,7 @@ bool TextDecoder::forward_debug(const int32_t * tokens, int32_t n_tokens, int32_
         return false;
     }
     
-    struct ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+    ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
     if (logits) {
         int64_t vocab_size = logits->ne[0];
         output.resize(n_tokens * vocab_size);
@@ -746,7 +750,7 @@ bool TextDecoder::forward_debug(const int32_t * tokens, int32_t n_tokens, int32_
     const char * debug_names[] = {"debug_norm0", "debug_q0_raw", "debug_q0_normed", "debug_q0_rope", 
                                    "debug_attn0_out", "debug_kq_scaled", "debug_kq_masked", "debug_kq_softmax"};
     for (const char * name : debug_names) {
-        struct ggml_tensor * t = ggml_graph_get_tensor(gf, name);
+        ggml_tensor * t = ggml_graph_get_tensor(gf, name);
         if (t) {
             size_t nbytes = ggml_nbytes(t);
             std::vector<float> data(nbytes / sizeof(float));
@@ -794,7 +798,7 @@ void free_kv_cache(kv_cache & cache) {
     cache.n_used = 0;
 }
 
-bool TextDecoder::load_vocab(struct gguf_context * ctx) {
+bool TextDecoder::load_vocab(gguf_context * ctx) {
     int64_t tokens_idx = gguf_find_key(ctx, "tokenizer.ggml.tokens");
     if (tokens_idx < 0) {
         error_msg_ = "Vocabulary not found in GGUF file";
@@ -819,8 +823,8 @@ bool TextDecoder::load_vocab(struct gguf_context * ctx) {
 // See HuggingFace tokenizers bytes_to_unicode() — printable bytes map to themselves,
 // non-printable bytes map to codepoints 256+n.
 static std::vector<int> build_unicode_to_byte_table() {
-    std::vector<int> byte_to_cp(256, 0);
-    std::vector<bool> assigned(256, false);
+    std::vector byte_to_cp(256, 0);
+    std::vector assigned(256, false);
 
     auto mark = [&](int lo, int hi) {
         for (int b = lo; b <= hi; ++b) {
@@ -840,7 +844,7 @@ static std::vector<int> build_unicode_to_byte_table() {
         }
     }
 
-    std::vector<int> cp_to_byte(512, -1);
+    std::vector cp_to_byte(512, -1);
     for (int b = 0; b < 256; ++b) {
         cp_to_byte[byte_to_cp[b]] = b;
     }
@@ -874,7 +878,7 @@ std::string TextDecoder::decode_token(int32_t token_id) const {
     while (i < token.size()) {
         // Decode one UTF-8 codepoint from the token string
         uint32_t cp = 0;
-        unsigned char c = static_cast<unsigned char>(token[i]);
+        auto c = static_cast<unsigned char>(token[i]);
         size_t len = 0;
 
         if (c < 0x80) {

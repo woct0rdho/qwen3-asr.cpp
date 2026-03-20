@@ -1,0 +1,163 @@
+name: Test Qwen3-ASR
+
+on:
+    workflow_dispatch:
+
+jobs:
+
+    test-windows:
+        runs-on: windows-latest
+        strategy:
+            matrix:
+                include:
+                    -   name: win-x64
+                        ggml_vulkan: OFF
+                    -   name: win-x64-vulkan
+                        ggml_vulkan: ON
+        steps:
+            -   uses: actions/checkout@v6
+                with:
+                    submodules: true
+                    fetch-depth: 1
+
+            -   uses: jakoch/install-vulkan-sdk-action@v1
+                if: matrix.ggml_vulkan == 'ON'
+                with:
+                    vulkan_version: 1.4.304.1
+                    install_runtime: true
+
+            -   name: Download assets
+                run: |
+                    Start-BitsTransfer -Source "https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-0.6b-q8_0.gguf?download=true" -Destination "assets/qwen3-asr-0.6b-q8_0.gguf"
+                    Start-BitsTransfer -Source "https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-forcedaligner-0.6b-f16.gguf?download=true" -Destination "assets/qwen3-forcedaligner-0.6b-f16.gguf"
+                    Start-BitsTransfer -Source "https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-1.7b-q4_1.gguf?download=true" -Destination "assets/qwen3-asr-1.7b-q4_1.gguf"
+                    Start-BitsTransfer -Source "https://raw.githubusercontent.com/ggml-org/whisper.cpp/refs/heads/master/samples/jfk.wav" -Destination "assets/jfk.wav"
+
+            -   name: Compile
+                run: |
+                    cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=${matrix.ggml_vulkan}
+                    cmake --build build --config Release
+                    python tests/flatten_bin_files.py build bin
+
+            -   name: Test
+                run: |
+                    bin/qwen3asr-test.exe
+
+
+    test-linux:
+        strategy:
+            matrix:
+                include:
+                    -   name: linux-x64
+                        runner: ubuntu-22.04
+                        ggml_vulkan: OFF
+                    -   name: linux-x64-vulkan
+                        runner: ubuntu-22.04
+                        ggml_vulkan: ON
+                    -   name: linux-arm64
+                        runner: ubuntu-22.04-arm
+                        ggml_vulkan: OFF
+                    -   name: linux-arm64-vulkan
+                        runner: ubuntu-22.04-arm
+                        ggml_vulkan: ON
+        runs-on: ${{ matrix.runner }}
+
+        steps:
+            -   uses: actions/checkout@v6
+                with:
+                    submodules: true
+                    fetch-depth: 1
+
+            -   name: Install Vulkan Tools
+                # Install Glslang because Vulkan doesn't bundle it for Ubuntu
+                if: matrix.ggml_vulkan == 'ON'
+                run: |
+                    sudo apt update
+                    sudo apt install -y vulkan-tools glslang-tools
+                    sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+                    sudo vulkaninfo
+
+            -   name: Build shaderc
+                if: matrix.ggml_vulkan == 'ON'
+                run: |
+                    # Set up shaderc source directory and build directory
+                    SOURCE_DIR=$PWD/shaderc
+                    BUILD_DIR=$PWD/shaderc_build
+                    
+                    # Clone shaderc repository
+                    git clone https://github.com/google/shaderc $SOURCE_DIR
+                    cd $SOURCE_DIR
+                    ./utils/git-sync-deps  # This fetches the dependencies
+                    
+                    # Create a separate build directory
+                    mkdir $BUILD_DIR
+                    cd $BUILD_DIR
+                    
+                    # Build shaderc using CMake and Ninja
+                    cmake -GNinja -DCMAKE_BUILD_TYPE=Release $SOURCE_DIR
+                    ninja
+                    
+                    # Optionally run tests
+                    # ctest
+                    
+                    # Move glslc to a directory in PATH
+                    sudo mv glslc/glslc /usr/local/bin/
+
+            -   name: Prepare Vulkan SDK
+                uses: humbletim/setup-vulkan-sdk@v1.2.1
+                if: matrix.ggml_vulkan == 'ON'
+                with:
+                    vulkan-query-version: 1.4.304.1
+                    vulkan-components: Vulkan-Headers, Vulkan-Loader
+                    vulkan-use-cache: true
+
+            -   name: Download assets      # cpu/vulkan, for test
+                run: |
+                    curl -L -o assets/qwen3-asr-0.6b-q8_0.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-0.6b-q8_0.gguf?download=true
+                    curl -L -o assets/qwen3-forcedaligner-0.6b-f16.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-forcedaligner-0.6b-f16.gguf?download=true
+                    curl -L -o assets/qwen3-asr-1.7b-q4_1.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-1.7b-q4_1.gguf?download=true
+                    curl -L -o assets/jfk.wav https://raw.githubusercontent.com/ggml-org/whisper.cpp/refs/heads/master/samples/jfk.wav
+
+            -   name: Compile
+                run: |
+                    cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=${matrix.ggml_vulkan}
+                    cmake --build build --config Release
+                    python tests/flatten_bin_files.py build bin
+
+            -   name: Test
+                run: |
+                    chmod +x ./bin/qwen3asr-test
+                    ./bin/qwen3asr-test
+
+    test-macos:
+        strategy:
+            matrix:
+                include:
+                    -   name: mac-arm64
+                        runner: macos-14
+                    -   name: mac-x64
+                        runner: macos-15-intel
+        runs-on:  ${{ matrix.runner }}
+        steps:
+            -   uses: actions/checkout@v6
+                with:
+                    submodules: true
+                    fetch-depth: 1
+
+            -   name: Download assets      # cpu/vulkan, for test
+                run: |
+                    curl -L -o assets/qwen3-asr-0.6b-q8_0.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-0.6b-q8_0.gguf?download=true
+                    curl -L -o assets/qwen3-forcedaligner-0.6b-f16.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-forcedaligner-0.6b-f16.gguf?download=true
+                    curl -L -o assets/qwen3-asr-1.7b-q4_1.gguf https://huggingface.co/Jaffe2718/Qwen3-ASR-GGUF/resolve/main/qwen3-asr-1.7b-q4_1.gguf?download=true
+                    curl -L -o assets/jfk.wav https://raw.githubusercontent.com/ggml-org/whisper.cpp/refs/heads/master/samples/jfk.wav
+
+            -   name: Compile
+                run: |
+                    cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+                    cmake --build build --config Release
+                    python tests/flatten_bin_files.py build bin
+
+            -   name: Test
+                run: |
+                    chmod +x ./bin/qwen3asr-test
+                    ./bin/qwen3asr-test

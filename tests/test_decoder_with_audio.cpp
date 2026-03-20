@@ -1,8 +1,6 @@
-#include "../src/text_decoder.h"
+#include "text_decoder.h"
+
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <cmath>
 #include <vector>
 #include <fstream>
 #include <algorithm>

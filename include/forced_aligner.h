@@ -1,9 +1,10 @@
 #pragma once
 
-#include "ggml.h"
-#include "ggml-backend.h"
-#include "gguf.h"
+#include "qwen3asr_win_export.h"
 
+#include <ggml.h>
+#include <ggml-backend.h>
+#include <gguf.h>
 #include <string>
 #include <map>
 #include <unordered_map>
@@ -71,42 +72,42 @@ struct forced_aligner_hparams {
 
 // Encoder layer for ForcedAligner audio encoder
 struct fa_encoder_layer {
-    struct ggml_tensor * attn_q_w = nullptr;
-    struct ggml_tensor * attn_q_b = nullptr;
-    struct ggml_tensor * attn_k_w = nullptr;
-    struct ggml_tensor * attn_k_b = nullptr;
-    struct ggml_tensor * attn_v_w = nullptr;
-    struct ggml_tensor * attn_v_b = nullptr;
-    struct ggml_tensor * attn_out_w = nullptr;
-    struct ggml_tensor * attn_out_b = nullptr;
+    ggml_tensor * attn_q_w = nullptr;
+    ggml_tensor * attn_q_b = nullptr;
+    ggml_tensor * attn_k_w = nullptr;
+    ggml_tensor * attn_k_b = nullptr;
+    ggml_tensor * attn_v_w = nullptr;
+    ggml_tensor * attn_v_b = nullptr;
+    ggml_tensor * attn_out_w = nullptr;
+    ggml_tensor * attn_out_b = nullptr;
     
-    struct ggml_tensor * attn_norm_w = nullptr;
-    struct ggml_tensor * attn_norm_b = nullptr;
+    ggml_tensor * attn_norm_w = nullptr;
+    ggml_tensor * attn_norm_b = nullptr;
     
-    struct ggml_tensor * ffn_up_w = nullptr;
-    struct ggml_tensor * ffn_up_b = nullptr;
-    struct ggml_tensor * ffn_down_w = nullptr;
-    struct ggml_tensor * ffn_down_b = nullptr;
+    ggml_tensor * ffn_up_w = nullptr;
+    ggml_tensor * ffn_up_b = nullptr;
+    ggml_tensor * ffn_down_w = nullptr;
+    ggml_tensor * ffn_down_b = nullptr;
     
-    struct ggml_tensor * ffn_norm_w = nullptr;
-    struct ggml_tensor * ffn_norm_b = nullptr;
+    ggml_tensor * ffn_norm_w = nullptr;
+    ggml_tensor * ffn_norm_b = nullptr;
 };
 
 // Decoder layer for ForcedAligner text decoder
 struct fa_decoder_layer {
-    struct ggml_tensor * attn_norm = nullptr;
+    ggml_tensor * attn_norm = nullptr;
     
-    struct ggml_tensor * attn_q = nullptr;
-    struct ggml_tensor * attn_k = nullptr;
-    struct ggml_tensor * attn_v = nullptr;
-    struct ggml_tensor * attn_output = nullptr;
-    struct ggml_tensor * attn_q_norm = nullptr;
-    struct ggml_tensor * attn_k_norm = nullptr;
+    ggml_tensor * attn_q = nullptr;
+    ggml_tensor * attn_k = nullptr;
+    ggml_tensor * attn_v = nullptr;
+    ggml_tensor * attn_output = nullptr;
+    ggml_tensor * attn_q_norm = nullptr;
+    ggml_tensor * attn_k_norm = nullptr;
     
-    struct ggml_tensor * ffn_norm = nullptr;
-    struct ggml_tensor * ffn_gate = nullptr;
-    struct ggml_tensor * ffn_up = nullptr;
-    struct ggml_tensor * ffn_down = nullptr;
+    ggml_tensor * ffn_norm = nullptr;
+    ggml_tensor * ffn_gate = nullptr;
+    ggml_tensor * ffn_up = nullptr;
+    ggml_tensor * ffn_down = nullptr;
 };
 
 // ForcedAligner model
@@ -114,40 +115,40 @@ struct forced_aligner_model {
     forced_aligner_hparams hparams;
     
     // Audio encoder - Conv2D front-end
-    struct ggml_tensor * conv2d1_w = nullptr;
-    struct ggml_tensor * conv2d1_b = nullptr;
-    struct ggml_tensor * conv2d2_w = nullptr;
-    struct ggml_tensor * conv2d2_b = nullptr;
-    struct ggml_tensor * conv2d3_w = nullptr;
-    struct ggml_tensor * conv2d3_b = nullptr;
-    struct ggml_tensor * conv_out_w = nullptr;
+    ggml_tensor * conv2d1_w = nullptr;
+    ggml_tensor * conv2d1_b = nullptr;
+    ggml_tensor * conv2d2_w = nullptr;
+    ggml_tensor * conv2d2_b = nullptr;
+    ggml_tensor * conv2d3_w = nullptr;
+    ggml_tensor * conv2d3_b = nullptr;
+    ggml_tensor * conv_out_w = nullptr;
     
     // Audio encoder - Post-processing
-    struct ggml_tensor * ln_post_w = nullptr;
-    struct ggml_tensor * ln_post_b = nullptr;
-    struct ggml_tensor * proj1_w = nullptr;
-    struct ggml_tensor * proj1_b = nullptr;
-    struct ggml_tensor * proj2_w = nullptr;
-    struct ggml_tensor * proj2_b = nullptr;
+    ggml_tensor * ln_post_w = nullptr;
+    ggml_tensor * ln_post_b = nullptr;
+    ggml_tensor * proj1_w = nullptr;
+    ggml_tensor * proj1_b = nullptr;
+    ggml_tensor * proj2_w = nullptr;
+    ggml_tensor * proj2_b = nullptr;
     
     // Audio encoder layers
     std::vector<fa_encoder_layer> encoder_layers;
     
     // Text decoder - Embeddings
-    struct ggml_tensor * token_embd = nullptr;
+    ggml_tensor * token_embd = nullptr;
     
     // Text decoder layers
     std::vector<fa_decoder_layer> decoder_layers;
     
     // Text decoder - Final norm
-    struct ggml_tensor * output_norm = nullptr;
+    ggml_tensor * output_norm = nullptr;
     
     // Classification head (instead of LM head)
-    struct ggml_tensor * classify_head_w = nullptr;
-    struct ggml_tensor * classify_head_b = nullptr;
+    ggml_tensor * classify_head_w = nullptr;
+    ggml_tensor * classify_head_b = nullptr;
     
     // GGML context and buffers
-    struct ggml_context * ctx = nullptr;
+    ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buffer = nullptr;
     
     // mmap state — must outlive all tensors backed by this mapping
@@ -155,7 +156,7 @@ struct forced_aligner_model {
     size_t mmap_size = 0;
     
     // Tensor name mapping
-    std::map<std::string, struct ggml_tensor *> tensors;
+    std::map<std::string, ggml_tensor *> tensors;
     
     // Vocabulary
     std::vector<std::string> vocab;
@@ -171,10 +172,10 @@ struct forced_aligner_model {
 
 // KV cache for decoder
 struct fa_kv_cache {
-    std::vector<struct ggml_tensor *> k_cache;
-    std::vector<struct ggml_tensor *> v_cache;
+    std::vector<ggml_tensor *> k_cache;
+    std::vector<ggml_tensor *> v_cache;
     
-    struct ggml_context * ctx = nullptr;
+    ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buffer = nullptr;
     
     int32_t n_ctx = 0;
@@ -211,13 +212,13 @@ public:
                            const std::string & language = "");
     
     // Get error message
-    const std::string & get_error() const { return error_msg_; }
+    [[nodiscard]] const std::string & get_error() const { return error_msg_; }
     
     // Check if model is loaded
-    bool is_loaded() const { return model_loaded_; }
+    [[nodiscard]] bool is_loaded() const { return model_loaded_; }
     
     // Get hyperparameters
-    const forced_aligner_hparams & get_hparams() const { return model_.hparams; }
+    [[nodiscard]] const forced_aligner_hparams & get_hparams() const { return model_.hparams; }
     
     std::vector<int32_t> tokenize_with_timestamps(const std::string & text,
                                                    std::vector<std::string> & words,
@@ -227,10 +228,10 @@ public:
     
 private:
     // Load model components
-    bool parse_hparams(struct gguf_context * ctx);
-    bool create_tensors(struct gguf_context * ctx);
-    bool load_tensor_data(const std::string & path, struct gguf_context * ctx);
-    bool load_vocab(struct gguf_context * ctx);
+    bool parse_hparams(gguf_context * ctx);
+    bool create_tensors(gguf_context * ctx);
+    bool load_tensor_data(const std::string & path, gguf_context * ctx);
+    bool load_vocab(gguf_context * ctx);
     
     // Initialize KV cache
     bool init_kv_cache(int32_t n_ctx);
@@ -242,7 +243,7 @@ private:
                       std::vector<float> & output);
     
     // Build computation graph for decoder forward pass
-    struct ggml_cgraph * build_decoder_graph(
+    ggml_cgraph * build_decoder_graph(
         const int32_t * tokens, int32_t n_tokens,
         const float * audio_embd, int32_t n_audio,
         int32_t audio_start_pos);

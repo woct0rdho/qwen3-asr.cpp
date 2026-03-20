@@ -1,29 +1,26 @@
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <vector>
 #include <string>
 
 #include "ggml.h"
-#include "ggml-backend.h"
 #include "gguf.h"
 
 int main() {
     const char* model_path = "models/qwen3-asr-0.6b-f16.gguf";
     
-    struct ggml_context* ggml_ctx = nullptr;
-    struct gguf_init_params params = {
+    ggml_context* ggml_ctx = nullptr;
+    gguf_init_params params = {
         /*.no_alloc =*/ false,
         /*.ctx      =*/ &ggml_ctx,
     };
     
-    struct gguf_context* ctx = gguf_init_from_file(model_path, params);
+    gguf_context* ctx = gguf_init_from_file(model_path, params);
     if (!ctx) {
         fprintf(stderr, "Failed to load GGUF\n");
         return 1;
     }
     
-    struct ggml_tensor* embd = ggml_get_tensor(ggml_ctx, "token_embd.weight");
+    ggml_tensor* embd = ggml_get_tensor(ggml_ctx, "token_embd.weight");
     if (!embd) {
         fprintf(stderr, "Failed to find token_embd.weight\n");
         gguf_free(ctx);

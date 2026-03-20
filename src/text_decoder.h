@@ -1,13 +1,13 @@
 #pragma once
 
-#include "ggml.h"
-#include "ggml-backend.h"
-#include "gguf.h"
+#include "qwen3asr_win_export.h"
 
+#include <ggml.h>
+#include <ggml-backend.h>
+#include <gguf.h>
 #include <string>
 #include <map>
 #include <vector>
-#include <memory>
 
 namespace qwen3_asr {
 
@@ -30,20 +30,20 @@ struct text_decoder_config {
 };
 
 struct decoder_layer {
-    struct ggml_tensor * attn_norm = nullptr;
+    ggml_tensor * attn_norm = nullptr;
     
-    struct ggml_tensor * attn_q = nullptr;
-    struct ggml_tensor * attn_k = nullptr;
-    struct ggml_tensor * attn_v = nullptr;
-    struct ggml_tensor * attn_output = nullptr;
-    struct ggml_tensor * attn_q_norm = nullptr;
-    struct ggml_tensor * attn_k_norm = nullptr;
+    ggml_tensor * attn_q = nullptr;
+    ggml_tensor * attn_k = nullptr;
+    ggml_tensor * attn_v = nullptr;
+    ggml_tensor * attn_output = nullptr;
+    ggml_tensor * attn_q_norm = nullptr;
+    ggml_tensor * attn_k_norm = nullptr;
     
-    struct ggml_tensor * ffn_norm = nullptr;
+    ggml_tensor * ffn_norm = nullptr;
     
-    struct ggml_tensor * ffn_gate = nullptr;
-    struct ggml_tensor * ffn_up = nullptr;
-    struct ggml_tensor * ffn_down = nullptr;
+    ggml_tensor * ffn_gate = nullptr;
+    ggml_tensor * ffn_up = nullptr;
+    ggml_tensor * ffn_down = nullptr;
 };
 
 // Text decoder model weights
@@ -51,19 +51,19 @@ struct text_decoder_model {
     text_decoder_config config;
     
     // Token embedding
-    struct ggml_tensor * token_embd = nullptr;  // [vocab_size, hidden_size]
+    ggml_tensor * token_embd = nullptr;  // [vocab_size, hidden_size]
     
     // Transformer layers
     std::vector<decoder_layer> layers;
     
     // Final RMSNorm
-    struct ggml_tensor * output_norm = nullptr; // [hidden_size]
+    ggml_tensor * output_norm = nullptr; // [hidden_size]
     
     // LM head
-    struct ggml_tensor * output = nullptr;      // [hidden_size, vocab_size]
+    ggml_tensor * output = nullptr;      // [hidden_size, vocab_size]
     
     // GGML context for tensor metadata
-    struct ggml_context * ctx = nullptr;
+    ggml_context * ctx = nullptr;
     
     // Backend buffer for weights
     ggml_backend_buffer_t buffer = nullptr;
@@ -73,15 +73,15 @@ struct text_decoder_model {
     size_t mmap_size = 0;
     
     // Tensor name to tensor mapping
-    std::map<std::string, struct ggml_tensor *> tensors;
+    std::map<std::string, ggml_tensor *> tensors;
 };
 
 // KV cache for autoregressive generation
 struct kv_cache {
-    std::vector<struct ggml_tensor *> k_cache;  // Per-layer K cache
-    std::vector<struct ggml_tensor *> v_cache;  // Per-layer V cache
+    std::vector<ggml_tensor *> k_cache;  // Per-layer K cache
+    std::vector<ggml_tensor *> v_cache;  // Per-layer V cache
     
-    struct ggml_context * ctx = nullptr;
+    ggml_context * ctx = nullptr;
     ggml_backend_buffer_t buffer = nullptr;
     
     int32_t n_ctx = 0;      // Maximum context length
@@ -135,13 +135,13 @@ public:
                             int32_t audio_start_pos, int32_t n_past,
                             std::vector<float> & output);
     
-    const text_decoder_config & get_config() const { return model_.config; }
+    [[nodiscard]] const text_decoder_config & get_config() const { return model_.config; }
     
-    const std::string & get_error() const { return error_msg_; }
+    [[nodiscard]] const std::string & get_error() const { return error_msg_; }
     
-    std::string decode_token(int32_t token_id) const;
+    [[nodiscard]] std::string decode_token(int32_t token_id) const;
     
-    std::string decode_tokens(const std::vector<int32_t> & tokens) const;
+    [[nodiscard]] std::string decode_tokens(const std::vector<int32_t> & tokens) const;
     
     bool forward_debug(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
                        std::vector<float> & output,
@@ -149,7 +149,7 @@ public:
     
 private:
     // Build computation graph for forward pass
-    struct ggml_cgraph * build_graph(const int32_t * tokens, int32_t n_tokens,
+    ggml_cgraph * build_graph(const int32_t * tokens, int32_t n_tokens,
                                      int32_t n_past,
                                      const float * audio_embd = nullptr,
                                      int32_t n_audio = 0,

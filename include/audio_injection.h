@@ -1,5 +1,7 @@
 #pragma once
 
+#include "qwen3asr_win_export.h"
+
 #include <vector>
 #include <cstdint>
 #include <string>

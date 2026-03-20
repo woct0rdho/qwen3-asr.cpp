@@ -1,8 +1,8 @@
 #include "qwen3_asr.h"
 #include "forced_aligner.h"
 #include "timing.h"
-#include "ggml.h"
 
+#include <ggml.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
