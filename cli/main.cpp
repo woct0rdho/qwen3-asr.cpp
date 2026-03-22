@@ -166,71 +166,33 @@ static bool parse_args(int argc, char ** argv, cli_params & params) {
     return true;
 }
 
-static std::string detect_language(const std::string & asr_text) {
-    const std::string prefix = "language ";
-    if (asr_text.size() < prefix.size() || asr_text.compare(0, prefix.size(), prefix) != 0) {
-        return "";
-    }
+static std::string detect_language(const std::string & asr_language_token) {
+    std::string lang = asr_language_token;
 
-    size_t pos = prefix.size();
-    if (pos >= asr_text.size()) {
-        return "";
-    }
+    // Trim whitespace
+    lang.erase(lang.begin(), std::find_if(lang.begin(), lang.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }));
+    lang.erase(std::find_if(lang.rbegin(), lang.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }).base(), lang.end());
 
-    unsigned char first = static_cast<unsigned char>(asr_text[pos]);
-    if (!std::isupper(first)) {
-        return "";
-    }
-
-    ++pos;
-    while (pos < asr_text.size()) {
-        unsigned char c = static_cast<unsigned char>(asr_text[pos]);
-        if (!std::islower(c)) {
-            break;
-        }
-        ++pos;
-    }
-
-    std::string lang = asr_text.substr(prefix.size(), pos - prefix.size());
+    // Convert to lowercase
     std::transform(lang.begin(), lang.end(), lang.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    // Some common mappings if needed
+    if (lang == "<|zh|>") return "chinese";
+    if (lang == "<|en|>") return "english";
+    if (lang == "<|ko|>") return "korean";
+
     return lang;
 }
 
 static std::string extract_transcript(const std::string & asr_text) {
-    const std::string prefix = "language ";
-    if (asr_text.size() < prefix.size() || asr_text.compare(0, prefix.size(), prefix) != 0) {
-        return asr_text;
-    }
-
-    size_t pos = prefix.size();
-    if (pos >= asr_text.size()) {
-        return "";
-    }
-
-    unsigned char first = static_cast<unsigned char>(asr_text[pos]);
-    if (!std::isupper(first)) {
-        return asr_text;
-    }
-
-    ++pos;
-    while (pos < asr_text.size()) {
-        unsigned char c = static_cast<unsigned char>(asr_text[pos]);
-        if (!std::islower(c)) {
-            break;
-        }
-        ++pos;
-    }
-
-    while (pos < asr_text.size()) {
-        unsigned char c = static_cast<unsigned char>(asr_text[pos]);
-        if (c >= 0x80 || !std::isspace(c)) {
-            break;
-        }
-        ++pos;
-    }
-
-    return asr_text.substr(pos);
+    // Qwen3 ASR text doesn't have "language " prefix in the text itself.
+    // It's just the raw transcript.
+    return asr_text;
 }
 
 static std::string escape_json_string(const std::string & s) {
@@ -294,16 +256,63 @@ static std::string to_timestamp(double t_sec, bool comma = false) {
 
 static std::string alignment_to_srt(const qwen3_asr::alignment_result & result) {
     std::string srt = "";
+    if (result.words.empty()) return srt;
 
-    for (size_t i = 0; i < result.words.size(); ++i) {
-        const auto & w = result.words[i];
+    int segment_index = 1;
+    size_t i = 0;
+
+    while (i < result.words.size()) {
+        std::string text = "";
+        double start_time = result.words[i].start;
+        double end_time = result.words[i].end;
+        int word_count = 0;
+
+        while (i < result.words.size()) {
+            const auto & w = result.words[i];
+
+            // Break if there is a long gap between words
+            if (word_count > 0 && (w.start - end_time > 1.0)) {
+                break;
+            }
+
+            // For non-Asian languages, we usually need spaces between words
+            if (word_count > 0 && !text.empty() &&
+                static_cast<unsigned char>(text.back()) < 0x80 &&
+                static_cast<unsigned char>(w.word.front()) < 0x80 &&
+                w.word.find_first_of(".,!?") != 0) {
+                text += " ";
+            }
+
+            text += w.word;
+            end_time = w.end;
+            word_count++;
+            i++;
+
+            // Break on punctuation
+            if (w.word.find("\xE3\x80\x82") != std::string::npos || // 。
+                w.word.find("\xEF\xBC\x9F") != std::string::npos || // ？
+                w.word.find("\xEF\xBC\x81") != std::string::npos || // ！
+                w.word.find("\xEF\xBC\x8C") != std::string::npos || // ，
+                w.word.find(".") != std::string::npos ||
+                w.word.find("?") != std::string::npos ||
+                w.word.find("!") != std::string::npos ||
+                w.word.find(",") != std::string::npos ||
+                w.word.find("\n") != std::string::npos) {
+                break;
+            }
+
+            // Break if sentence gets too long
+            if (word_count >= 15 || text.size() >= 45) {
+                break;
+            }
+        }
 
         char buf[64];
-        snprintf(buf, sizeof(buf), "%zu\n", i + 1);
+        snprintf(buf, sizeof(buf), "%d\n", segment_index++);
         srt += buf;
 
-        srt += to_timestamp(w.start, true) + " --> " + to_timestamp(w.end, true) + "\n";
-        srt += w.word + "\n\n";
+        srt += to_timestamp(start_time, true) + " --> " + to_timestamp(end_time, true) + "\n";
+        srt += text + "\n\n";
     }
 
     return srt;
@@ -478,7 +487,7 @@ static int run_transcribe_and_align(const cli_params & params) {
         return 1;
     }
 
-    std::string detected_lang = detect_language(asr_result.text);
+    std::string detected_lang = detect_language(asr_result.language);
     std::string align_lang = params.language.empty() ? detected_lang : params.language;
     std::string transcript = extract_transcript(asr_result.text);
 
